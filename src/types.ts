@@ -430,7 +430,14 @@ export interface KaboomCtx {
 	 */
 	follow(obj: GameObj | null, offset?: Vec2): FollowComp,
 	/**
-	 * Custom shader.
+	 * Custom shader. You can pass it an object or function to specify the shader's uniforms.
+	 * If provided, the callback will be invoked on every update.
+	 * @example
+	 * ```js
+	 * const myShader = shader('color_change', () => ({
+   *   u_time: kb.time(),
+   * }))
+	 * ```
 	 */
 	shader(id: string, uniform?: Uniform | (() => Uniform)): ShaderComp,
 	/**
