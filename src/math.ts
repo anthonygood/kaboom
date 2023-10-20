@@ -212,6 +212,7 @@ export class Color {
 		}
 	}
 
+	// TODO: use range of [0, 360] [0, 100] [0, 100]?
 	static fromHSL(h: number, s: number, l: number) {
 
 		if (s == 0){
@@ -276,6 +277,29 @@ export class Color {
 			lerp(this.g, dest.g, t),
 			lerp(this.b, dest.b, t),
 		)
+	}
+
+	toHSL(): [number, number, number] {
+		const r = this.r / 255
+		const g = this.g / 255
+		const b = this.b / 255
+		const max = Math.max(r, g, b), min = Math.min(r, g, b)
+		let h = (max + min) / 2
+		let s = h
+		const l = h
+		if (max == min) {
+			h = s = 0
+		} else {
+			const d = max - min
+			s = l > 0.5 ? d / (2 - max - min) : d / (max + min)
+			switch (max) {
+				case r: h = (g - b) / d + (g < b ? 6 : 0); break
+				case g: h = (b - r) / d + 2; break
+				case b: h = (r - g) / d + 4; break
+			}
+			h /= 6
+		}
+		return [ h, s, l ]
 	}
 
 	eq(other: Color): boolean {
@@ -627,7 +651,7 @@ export class RNG {
 			this.genNumber(a.b, b.b),
 		)
 	}
-	genAny<T extends RNGValue>(...args: T[]): T {
+	genAny<T = RNGValue>(...args: T[]): T {
 		if (args.length === 0) {
 			return this.gen() as T
 		} else if (args.length === 1) {

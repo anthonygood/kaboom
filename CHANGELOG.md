@@ -1,3 +1,22 @@
+### v3000.1.12
+- fix `color()` and `rgb()` not working
+
+### v3000.1.11
+- added option `kaboom({ focus: false })` to disable focus on start
+- fixed `rand()` typing for numbers
+- fixed mouse position in fullscreen
+- added `Color#toHSL()`
+
+### v3000.1.10
+- fix test code accidentally getting shipped (where a screenshot will be downloaded every time you press space)
+
+### v3000.1.9
+- added `fill` option to `rect()`, `circle()` and `sprite()`
+- fix view getting cut off in letterbox mode
+
+### v3000.1.8
+- fixed `scale` option acting weird when width and height are defined (by @hirnsalat)
+
 ### v3000.1.7
 - fixed `debug.paused` not pausing audio
 - added `mask()` component
@@ -13,6 +32,21 @@ loadFont("apl386", "/examples/fonts/apl386.ttf", {
 - fixed `wave()` not starting at `0` when time is `0`
 - kaboom now only displays error screen for kaboom's own error, instead of catching all errors in current window
 - added `KaboomError` class for errors related to current kaboom instance
+- setting `obj.text` with `text()` component now immediately updates `width` and `height` property
+```js
+const obj = add([
+    text("oh hi"),
+    pos(100, 200),
+])
+
+// before
+obj.text = "bye"
+console.log(obj.width) // still the width of "oh hi" until next render
+
+// before
+obj.text = "bye"
+console.log(obj.width) // will be updated to the width of "bye"
+```
 
 ### v3000.1.6
 - fixed `loadSound` typing to accept `ArrayBuffer`

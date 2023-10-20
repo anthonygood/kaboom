@@ -611,6 +611,7 @@ export interface KaboomCtx {
 	 * @since v3000.2
 	 */
 	mask(maskType?: Mask): MaskComp,
+	drawon(canvas: FrameBuffer): Comp,
 	/**
 	 * A tile on a tile map.
 	 *
@@ -1447,6 +1448,12 @@ export interface KaboomCtx {
 	 */
 	isGamepadButtonReleased(btn?: GamepadButton): boolean,
 	/**
+	 * Get stick axis values from a gamepad.
+	 *
+	 * @since v3000.2
+	 */
+	getGamepadStick(stick: GamepadStick): Vec2,
+	/**
 	 * List of characters inputted since last frame.
 	 *
 	 * @since v3000.0
@@ -1602,7 +1609,6 @@ export interface KaboomCtx {
 	 * ```
 	 */
 	loop(t: number, action: () => void): EventController,
-	Timer: typeof Timer,
 	/**
 	 * Play a piece of audio.
 	 *
@@ -1666,7 +1672,7 @@ export interface KaboomCtx {
 	 * rand(rgb(255, 255, 255))
 	 * ```
 	 */
-	rand<T extends RNGValue>(n: T): T,
+	rand<T = RNGValue>(n: T): T,
 	/**
 	 * Get a random value between the given bound.
 	 *
@@ -1681,7 +1687,7 @@ export interface KaboomCtx {
 	 * ])
 	 * ```
 	 */
-	rand<T extends RNGValue>(a: T, b: T): T,
+	rand<T = RNGValue>(a: T, b: T): T,
 	/**
 	 * rand() but floored to integer.
 	 *
@@ -2239,6 +2245,12 @@ export interface KaboomCtx {
 	 */
 	formatText(options: DrawTextOpt): FormattedText,
 	/**
+	 * Create a canvas to draw stuff offscreen.
+	 *
+	 * @since v3000.2
+	 */
+	makeCanvas(w: number, h: number): FrameBuffer
+	/**
 	 * @section Debug
 	 *
 	 * @example
@@ -2353,12 +2365,6 @@ export interface KaboomCtx {
 	 * @since v3000.0
 	 */
 	EventController: typeof EventController,
-	/**
-	 * Error related to this kaboom instance.
-	 *
-	 * @since v3000.2
-	 */
-	KaboomError: typeof KaboomError,
 	/**
 	 * Current Kaboom library version.
 	 *
@@ -2545,6 +2551,12 @@ export interface KaboomOpt<T extends PluginList<any> = any> {
 	 */
 	maxFPS?: number,
 	/**
+	 * If focus on the canvas on start (default true).
+	 *
+	 * @since v3000.2
+	 */
+	focus?: boolean,
+	/**
 	 * If import all kaboom functions to global (default true).
 	 */
 	global?: boolean,
@@ -2622,6 +2634,13 @@ export interface GameObjRaw {
 	 * @since v3000.0
 	 */
 	draw(): void,
+	/**
+	 * Draw debug info in inspect mode
+	 *
+	 * @since v3000.0
+	 */
+	drawInspect: () => void,
+	clearEvents: () => void,
 	/**
 	 * If there's certain tag(s) on the game obj.
 	 */
@@ -2706,6 +2725,12 @@ export interface GameObjRaw {
 	 * A unique number ID for each game object.
 	 */
 	id: GameObjID | null,
+	/**
+	 * The canvas to draw this game object on
+	 *
+	 * @since v3000.2
+	 */
+	canvas: FrameBuffer | null,
 	onKeyDown(key: Key, action: (key: Key) => void): EventController,
 	onKeyDown(action: (key: Key) => void): EventController,
 	onKeyPress(key: Key, action: (key: Key) => void): EventController,
@@ -2980,7 +3005,7 @@ export declare class FontData {
 }
 
 export type BitmapFontData = GfxFont
-export type ShaderData = GfxShader
+export type ShaderData = Shader
 
 // TODO: enable setting on load, make part of SoundData
 /**
@@ -3090,12 +3115,14 @@ export interface AudioPlay {
 	then(action: () => void): EventController,
 }
 
-// TODO: hide
-export interface GfxShader {
-	bind(): void,
-	unbind(): void,
-	send(uniform: Uniform): void,
-	free(): void,
+export declare class Shader {
+	ctx: GfxCtx
+	glProgram: WebGLProgram
+	constructor(ctx: GfxCtx, vert: string, frag: string, attribs: string[])
+	bind()
+	unbind()
+	send(uniform: Uniform)
+	free()
 }
 
 export type TextureOpt = {
@@ -3105,19 +3132,38 @@ export type TextureOpt = {
 
 export type ImageSource = Exclude<TexImageSource, VideoFrame>
 
+type GfxCtx = any
+
 export declare class Texture {
-	glTex: WebGLTexture
+	ctx: GfxCtx
 	src: null | ImageSource
+	glTex: WebGLTexture
 	width: number
 	height: number
-	constructor(w: number, h: number, opt?: TextureOpt)
-	static fromImage(img: ImageSource, opt?: TextureOpt): Texture
-	update(img: ImageSource, x: number, y: number): void
-	bind(): void
-	unbind(): void
+	constructor(ctx: GfxCtx, w: number, h: number, opt?: TextureOpt)
+	static fromImage(ctx: GfxCtx, img: ImageSource, opt?: TextureOpt): Texture
+	update(img: ImageSource, x?: number, y?: number)
+	bind()
+	unbind()
 	/**
 	 * Frees up texture memory. Call this once the texture is no longer being used to avoid memory leaks.
 	 */
+	free(): void
+}
+
+export declare class FrameBuffer {
+	ctx: GfxCtx
+	tex: Texture
+	glFramebuffer: WebGLFramebuffer
+	glRenderbuffer: WebGLRenderbuffer
+	constructor(ctx: GfxCtx, w: number, h: number, opt?: TextureOpt)
+	width: number
+	height: number
+	toImageData(): ImageData
+	toDataURL(): string
+	draw(action: () => void): void
+	bind(): void
+	unbind(): void
 	free(): void
 }
 
@@ -3820,6 +3866,12 @@ export declare class Color {
 	 */
 	lerp(dest: Color, t: number): Color
 	eq(c: Color): boolean
+	/**
+	 * Convert color into HSL format.
+	 *
+	 * @since v3000.2
+	 */
+	toHSL(): [number, number, number]
 	toString(): string
 	/**
 	 * Return the hex string of color.
@@ -3916,7 +3968,7 @@ export declare class RNG {
 	genNumber(a: number, b: number): number
 	genVec2(a: Vec2, b?: Vec2): Vec2
 	genColor(a: Color, b: Color): Color
-	genAny<T extends RNGValue>(...args: T[]): T
+	genAny<T = RNGValue>(...args: T[]): T
 }
 
 export interface Comp {
@@ -4351,9 +4403,14 @@ export interface SpriteCompOpt {
 	 * The rectangular sub-area of the texture to render, default to full texture `quad(0, 0, 1, 1)`.
 	 */
 	quad?: Quad,
+	/**
+	 * If fill the sprite (useful if you only want to render outline with outline() component).
+	 */
+	fill?: boolean,
 }
 
 export interface SpriteComp extends Comp {
+	draw: Comp["draw"],
 	/**
 	 * Width for sprite.
 	 */
@@ -4413,6 +4470,7 @@ export interface SpriteComp extends Comp {
 }
 
 export interface TextComp extends Comp {
+	draw: Comp["draw"],
 	/**
 	 * The text to render.
 	 */
@@ -4519,9 +4577,14 @@ export interface RectCompOpt {
 	 * Radius of the rectangle corners.
 	 */
 	radius?: number,
+	/**
+	 * If fill the rectangle (useful if you only want to render outline with outline() component).
+	 */
+	fill?: boolean,
 }
 
 export interface RectComp extends Comp {
+	draw: Comp["draw"],
 	/**
 	 * Width of rectangle.
 	 */
@@ -4540,7 +4603,15 @@ export interface RectComp extends Comp {
 	renderArea(): Rect,
 }
 
+export interface CircleCompOpt {
+	/**
+	 * If fill the circle (useful if you only want to render outline with outline() component).
+	 */
+	fill?: boolean,
+}
+
 export interface CircleComp extends Comp {
+	draw: Comp["draw"],
 	/**
 	 * Radius of circle.
 	 */
@@ -4552,6 +4623,7 @@ export interface CircleComp extends Comp {
 }
 
 export interface UVQuadComp extends Comp {
+	draw: Comp["draw"],
 	/**
 	 * Width of rect.
 	 */
@@ -4790,22 +4862,6 @@ export interface BodyCompOpt {
 	mass?: number,
 }
 
-export declare class Timer {
-	/**
-	 * Time left.
-	 */
-	time: number
-	/**
-	 * The action to take when timer is up
-	 */
-	action: () => void
-	readonly finished: boolean
-	paused: boolean
-	constructor(time: number, action: () => void)
-	tick(dt: number): boolean
-	reset(time: number): void
-}
-
 export interface TimerComp extends Comp {
 	/**
 	 * Run the callback after n seconds.
@@ -4869,7 +4925,11 @@ export interface HealthComp extends Comp {
 	/**
 	 * Max amount of HP.
 	 */
-	maxHP(): number,
+	maxHP(): number | null,
+	/**
+	 * Set max amount of HP.
+	 */
+	setMaxHP(hp: number): void,
 	/**
 	 * Register an event that runs when hurt() is called upon the object.
 	 *
@@ -5204,8 +5264,6 @@ export declare class EventController {
 	constructor(cancel: () => void)
 	static join(events: EventController[]): EventController
 }
-
-export declare class KaboomError extends Error {}
 
 // TODO: global name conflict, renamed to KEvent?
 export declare class Event<Args extends any[] = any[]> {

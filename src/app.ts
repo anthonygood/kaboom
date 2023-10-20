@@ -1,7 +1,6 @@
 // everything related to canvas, game loop and input
 
 import type {
-	KaboomCtx,
 	Cursor,
 	Key,
 	MouseButton,
@@ -13,11 +12,13 @@ import type {
 
 import {
 	Vec2,
+	map,
 } from "./math"
 
 import {
 	EventHandler,
 	EventController,
+	overload2,
 } from "./utils"
 
 import GAMEPAD_MAP from "./gamepad.json"
@@ -346,70 +347,47 @@ export default (opt: {
 	}
 
 	// input callbacks
-	const onKeyDown = ((key, action) => {
-		if (typeof key === "function") {
-			return state.events.on("keyDown", key)
-		} else if (typeof key === "string" && typeof action === "function") {
-			return state.events.on("keyDown", (k) => k === key && action(key))
-		}
-	}) as KaboomCtx["onKeyDown"]
+	const onKeyDown = overload2((action: (key: Key) => void) => {
+		return state.events.on("keyDown", action)
+	}, (key: Key, action: (key: Key) => void) => {
+		return state.events.on("keyDown", (k) => k === key && action(key))
+	})
 
-	const onKeyPress = ((key, action) => {
-		if (typeof key === "function") {
-			return state.events.on("keyPress", key)
-		} else if (typeof key === "string" && typeof action === "function") {
-			return state.events.on("keyPress", (k) => k === key && action(key))
-		}
-	}) as KaboomCtx["onKeyPress"]
+	const onKeyPress = overload2((action: (key: Key) => void) => {
+		return state.events.on("keyPress", action)
+	}, (key: Key, action: (key: Key) => void) => {
+		return state.events.on("keyPress", (k) => k === key && action(key))
+	})
 
-	const onKeyPressRepeat = ((key, action) => {
-		if (typeof key === "function") {
-			return state.events.on("keyPressRepeat", key)
-		} else if (typeof key === "string" && typeof action === "function") {
-			return state.events.on("keyPressRepeat", (k) => k === key && action(key))
-		}
-	}) as KaboomCtx["onKeyPressRepeat"]
+	const onKeyPressRepeat = overload2((action: (key: Key) => void) => {
+		return state.events.on("keyPressRepeat", action)
+	}, (key: Key, action: (key: Key) => void) => {
+		return state.events.on("keyPressRepeat", (k) => k === key && action(key))
+	})
 
-	const onKeyRelease = ((key, action) => {
-		if (typeof key === "function") {
-			return state.events.on("keyRelease", key)
-		} else if (typeof key === "string" && typeof action === "function") {
-			return state.events.on("keyRelease", (k) => k === key && action(key))
-		}
-	}) as KaboomCtx["onKeyRelease"]
+	const onKeyRelease = overload2((action: (key: Key) => void) => {
+		return state.events.on("keyRelease", action)
+	}, (key: Key, action: (key: Key) => void) => {
+		return state.events.on("keyRelease", (k) => k === key && action(key))
+	})
 
-	function onMouseDown(
-		mouse: MouseButton | ((m: MouseButton) => void),
-		action?: (m: MouseButton) => void,
-	): EventController {
-		if (typeof mouse === "function") {
-			return state.events.on("mouseDown", (m) => mouse(m))
-		} else {
-			return state.events.on("mouseDown", (m) => m === mouse && action(m))
-		}
-	}
+	const onMouseDown = overload2((action: (m: MouseButton) => void) => {
+		return state.events.on("mouseDown", (m) => action(m))
+	}, (mouse: MouseButton, action: (m: MouseButton) => void) => {
+		return state.events.on("mouseDown", (m) => m === mouse && action(m))
+	})
 
-	function onMousePress(
-		mouse: MouseButton | ((m: MouseButton) => void),
-		action?: (m: MouseButton) => void,
-	): EventController {
-		if (typeof mouse === "function") {
-			return state.events.on("mousePress", (m) => mouse(m))
-		} else {
-			return state.events.on("mousePress", (m) => m === mouse && action(m))
-		}
-	}
+	const onMousePress = overload2((action: (m: MouseButton) => void) => {
+		return state.events.on("mousePress", (m) => action(m))
+	}, (mouse: MouseButton, action: (m: MouseButton) => void) => {
+		return state.events.on("mousePress", (m) => m === mouse && action(m))
+	})
 
-	function onMouseRelease(
-		mouse: MouseButton | ((m: MouseButton) => void),
-		action?: (m: MouseButton) => void,
-	): EventController {
-		if (typeof mouse === "function") {
-			return state.events.on("mouseRelease", (m) => mouse(m))
-		} else {
-			return state.events.on("mouseRelease", (m) => m === mouse && action(m))
-		}
-	}
+	const onMouseRelease = overload2((action: (m: MouseButton) => void) => {
+		return state.events.on("mouseRelease", (m) => action(m))
+	}, (mouse: MouseButton, action: (m: MouseButton) => void) => {
+		return state.events.on("mouseRelease", (m) => m === mouse && action(m))
+	})
 
 	function onMouseMove(f: (pos: Vec2, dpos: Vec2) => void): EventController {
 		return state.events.on("mouseMove", () => f(mousePos(), mouseDeltaPos()))
@@ -608,9 +586,30 @@ export default (opt: {
 	const docEvents: EventList<DocumentEventMap> = {}
 	const winEvents: EventList<WindowEventMap> = {}
 
+	const pd = opt.pixelDensity || window.devicePixelRatio || 1
+
 	canvasEvents.mousemove = (e) => {
 		const mousePos = new Vec2(e.offsetX, e.offsetY)
 		const mouseDeltaPos = new Vec2(e.movementX, e.movementY)
+		if (isFullscreen()) {
+			const cw = state.canvas.width / pd
+			const ch = state.canvas.height / pd
+			const ww = window.innerWidth
+			const wh = window.innerHeight
+			const rw = ww / wh
+			const rc = cw / ch
+			if (rw > rc) {
+				const ratio = wh / ch
+				const offset = (ww - (cw * ratio)) / 2
+				mousePos.x = map(e.offsetX - offset, 0, cw * ratio, 0, cw)
+				mousePos.y = map(e.offsetY, 0, ch * ratio, 0, ch)
+			} else {
+				const ratio = ww / cw
+				const offset = (wh - (ch * ratio)) / 2
+				mousePos.x = map(e.offsetX , 0, cw * ratio, 0, cw)
+				mousePos.y = map(e.offsetY - offset, 0, ch * ratio, 0, ch)
+			}
+		}
 		state.events.onOnce("input", () => {
 			state.isMouseMoved = true
 			state.mousePos = mousePos
@@ -695,6 +694,7 @@ export default (opt: {
 		})
 	}
 
+	// TODO: handle all touches at once instead of sequentially
 	canvasEvents.touchstart = (e) => {
 		// disable long tap context menu
 		e.preventDefault()

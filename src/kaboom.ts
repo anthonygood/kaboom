@@ -1,6 +1,17 @@
-const VERSION = "3000.1.7"
+const VERSION = "3000.1.13"
 
 import initApp from "./app"
+import initGfx, {
+	Texture,
+	FrameBuffer,
+	Shader,
+	BatchRenderer,
+} from "./gfx"
+
+import initAssets, {
+	Asset,
+	AssetBucket,
+} from "./assets"
 
 import {
 	sat,
@@ -40,9 +51,10 @@ import {
 } from "./math"
 
 import easings from "./easings"
+import TexPacker from "./texPacker"
 
 import {
-	IDList,
+	Registry,
 	Event,
 	EventHandler,
 	download,
@@ -52,9 +64,10 @@ import {
 	uid,
 	isDataURL,
 	getExt,
-	deepEq,
+	overload2,
 	dataURLToArrayBuffer,
 	EventController,
+	getErrorMessage,
 	// eslint-disable-next-line
 	warn,
 	// eslint-disable-next-line
@@ -62,14 +75,13 @@ import {
 	// eslint-disable-next-line
 	comparePerf,
 	BinaryHeap,
+	runes,
 } from "./utils"
 
 import type {
-	GfxShader,
 	GfxFont,
 	RenderProps,
 	CharTransform,
-	TextureOpt,
 	ImageSource,
 	FormattedText,
 	FormattedChar,
@@ -125,6 +137,7 @@ import type {
 	RectComp,
 	RectCompOpt,
 	UVQuadComp,
+	CircleCompOpt,
 	CircleComp,
 	OutlineComp,
 	TimerComp,
@@ -165,8 +178,6 @@ import type {
 	Mask,
 	Outline,
 } from "./types"
-
-import Timer from "./timer"
 
 import beanSpriteSrc from "./assets/bean.png"
 import burpSoundSrc from "./assets/burp.mp3"
@@ -361,13 +372,6 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 		canvas.height = canvas.parentElement.offsetHeight
 	}
 
-	const cw = canvas.width
-	const ch = canvas.height
-	const pixelDensity = gopt.pixelDensity || window.devicePixelRatio
-
-	canvas.width *= pixelDensity
-	canvas.height *= pixelDensity
-
 	// canvas css styles
 	const styles = [
 		"outline: none",
@@ -375,6 +379,8 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 	]
 
 	if (fixedSize) {
+		const cw = canvas.width
+		const ch = canvas.height
 		styles.push(`width: ${cw}px`)
 		styles.push(`height: ${ch}px`)
 	} else {
@@ -389,13 +395,18 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 	}
 
 	canvas.style.cssText = styles.join(";")
+
+	const pixelDensity = gopt.pixelDensity || window.devicePixelRatio
+
+	canvas.width *= pixelDensity
+	canvas.height *= pixelDensity
 	// make canvas focusable
 	canvas.tabIndex = 0
 
 	const fontCacheCanvas = document.createElement("canvas")
 	fontCacheCanvas.width = MAX_TEXT_CACHE_SIZE
 	fontCacheCanvas.height = MAX_TEXT_CACHE_SIZE
-	const fontCacheCtx = fontCacheCanvas.getContext("2d", {
+	const fontCacheC2d = fontCacheCanvas.getContext("2d", {
 		willReadFrequently: true,
 	})
 
@@ -418,201 +429,8 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 			preserveDrawingBuffer: true,
 		})
 
-	class Texture {
-
-		src: null | ImageSource = null
-		glTex: WebGLTexture
-		width: number
-		height: number
-
-		constructor(w: number, h: number, opt: TextureOpt = {}) {
-
-			this.glTex = gl.createTexture()
-			gc.push(() => this.free())
-			this.bind()
-
-			if (w && h) {
-				gl.texImage2D(
-					gl.TEXTURE_2D,
-					0, gl.RGBA,
-					w,
-					h,
-					0,
-					gl.RGBA,
-					gl.UNSIGNED_BYTE,
-					null,
-				)
-			}
-
-			this.width = w
-			this.height = h
-
-			const filter = (() => {
-				switch (opt.filter ?? gopt.texFilter) {
-					case "linear": return gl.LINEAR
-					case "nearest": return gl.NEAREST
-					default: return gl.NEAREST
-				}
-			})()
-
-			const wrap = (() => {
-				switch (opt.wrap) {
-					case "repeat": return gl.REPEAT
-					case "clampToEdge": return gl.CLAMP_TO_EDGE
-					default: return gl.CLAMP_TO_EDGE
-				}
-			})()
-
-			gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter)
-			gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter)
-			gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, wrap)
-			gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, wrap)
-			this.unbind()
-
-		}
-
-		static fromImage(img: ImageSource, opt: TextureOpt = {}): Texture {
-			const tex = new Texture(0, 0, opt)
-			tex.bind()
-			gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img)
-			tex.width = img.width
-			tex.height = img.height
-			tex.unbind()
-			tex.src = img
-			return tex
-		}
-
-		update(img: ImageSource, x = 0, y = 0) {
-			this.bind()
-			gl.texSubImage2D(gl.TEXTURE_2D, 0, x, y, gl.RGBA, gl.UNSIGNED_BYTE, img)
-			this.unbind()
-		}
-
-		bind() {
-			gl.bindTexture(gl.TEXTURE_2D, this.glTex)
-		}
-
-		unbind() {
-			gl.bindTexture(gl.TEXTURE_2D, null)
-		}
-
-		free() {
-			gl.deleteTexture(this.glTex)
-		}
-
-	}
-
-	class KaboomError extends Error {
-		constructor(msg) {
-			super(msg)
-			this.name = "KaboomError"
-		}
-	}
-
-	class TexPacker {
-		private tex: Texture
-		private canvas: HTMLCanvasElement
-		private ctx: CanvasRenderingContext2D
-		private x: number = 0
-		private y: number = 0
-		private curHeight: number = 0
-		constructor(w: number, h: number) {
-			this.canvas = document.createElement("canvas")
-			this.canvas.width = w
-			this.canvas.height = h
-			this.tex = Texture.fromImage(this.canvas)
-			this.ctx = this.canvas.getContext("2d")
-		}
-		add(img: ImageSource): [Texture, Quad] {
-			if (img.width > this.canvas.width || img.height > this.canvas.height) {
-				throw new KaboomError(`Texture size (${img.width} x ${img.height}) exceeds limit (${this.canvas.width} x ${this.canvas.height})`)
-			}
-			if (this.x + img.width > this.canvas.width) {
-				this.x = 0
-				this.y += this.curHeight
-				this.curHeight = 0
-			}
-			if (this.y + img.height > this.canvas.height) {
-				this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height)
-				this.tex = Texture.fromImage(this.canvas)
-				this.x = 0
-				this.y = 0
-				this.curHeight = 0
-			}
-			const pos = new Vec2(this.x, this.y)
-			this.x += img.width
-			if (img.height > this.curHeight) {
-				this.curHeight = img.height
-			}
-			if (img instanceof ImageData) {
-				this.ctx.putImageData(img, pos.x, pos.y)
-			} else {
-				this.ctx.drawImage(img, pos.x, pos.y)
-			}
-			this.tex.update(this.canvas)
-			return [this.tex, new Quad(
-				pos.x / this.canvas.width,
-				pos.y / this.canvas.height,
-				img.width / this.canvas.width,
-				img.height / this.canvas.height,
-			)]
-		}
-	}
-
-	class FrameBuffer {
-
-		tex: Texture
-		glFrameBuffer: WebGLFramebuffer
-		glRenderBuffer: WebGLRenderbuffer
-
-		constructor(w: number, h: number, opt: TextureOpt = {}) {
-			this.tex = new Texture(w, h, opt)
-			this.glFrameBuffer = gl.createFramebuffer()
-			this.glRenderBuffer = gl.createRenderbuffer()
-			gc.push(() => this.free())
-			this.bind()
-			gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_STENCIL, w, h)
-			gl.framebufferTexture2D(
-				gl.FRAMEBUFFER,
-				gl.COLOR_ATTACHMENT0,
-				gl.TEXTURE_2D,
-				this.tex.glTex,
-				0,
-			)
-			gl.framebufferRenderbuffer(
-				gl.FRAMEBUFFER,
-				gl.DEPTH_STENCIL_ATTACHMENT,
-				gl.RENDERBUFFER,
-				this.glRenderBuffer,
-			)
-			this.unbind()
-		}
-
-		get width() {
-			return this.tex.width
-		}
-
-		get height() {
-			return this.tex.height
-		}
-
-		bind() {
-			gl.bindFramebuffer(gl.FRAMEBUFFER, this.glFrameBuffer)
-			gl.bindRenderbuffer(gl.RENDERBUFFER, this.glRenderBuffer)
-		}
-
-		unbind() {
-			gl.bindFramebuffer(gl.FRAMEBUFFER, null)
-			gl.bindRenderbuffer(gl.RENDERBUFFER, null)
-		}
-
-		free() {
-			gl.deleteFramebuffer(this.glFrameBuffer)
-			gl.deleteRenderbuffer(this.glRenderBuffer)
-			this.tex.free()
-		}
-
-	}
+	const ggl = initGfx(gl)
+	const ass = initAssets()
 
 	const gfx = (() => {
 
@@ -621,12 +439,13 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 		// a 1x1 white texture to draw raw shapes like rectangles and polygons
 		// we use a texture for those so we can use only 1 pipeline for drawing sprites + shapes
 		const emptyTex = Texture.fromImage(
+			ggl,
 			new ImageData(new Uint8ClampedArray([ 255, 255, 255, 255 ]), 1, 1),
 		)
 
 		const frameBuffer = (gopt.width && gopt.height)
-			? new FrameBuffer(gopt.width * pixelDensity, gopt.height * pixelDensity)
-			: new FrameBuffer(gl.drawingBufferWidth, gl.drawingBufferHeight)
+			? new FrameBuffer(ggl, gopt.width * pixelDensity * gscale, gopt.height * pixelDensity * gscale)
+			: new FrameBuffer(ggl, gl.drawingBufferWidth, gl.drawingBufferHeight)
 
 		let bgColor: null | Color = null
 		let bgAlpha = 1
@@ -643,7 +462,6 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 		}
 
 		gl.enable(gl.BLEND)
-		gl.enable(gl.SCISSOR_TEST)
 		gl.blendFuncSeparate(
 			gl.SRC_ALPHA,
 			gl.ONE_MINUS_SRC_ALPHA,
@@ -651,28 +469,11 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 			gl.ONE_MINUS_SRC_ALPHA,
 		)
 
-		// we only use one vertex and index buffer that batches all draw calls
-		const vbuf = gl.createBuffer()
-
-		gl.bindBuffer(gl.ARRAY_BUFFER, vbuf)
-		gl.bufferData(gl.ARRAY_BUFFER, MAX_BATCHED_VERTS * 4, gl.DYNAMIC_DRAW)
-
-		VERTEX_FORMAT.reduce((offset, f, i) => {
-			gl.vertexAttribPointer(i, f.size, gl.FLOAT, false, STRIDE * 4, offset)
-			gl.enableVertexAttribArray(i)
-			return offset + f.size * 4
-		}, 0)
-
-		gl.bindBuffer(gl.ARRAY_BUFFER, null)
-
-		const ibuf = gl.createBuffer()
-
-		gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibuf)
-		gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, MAX_BATCHED_INDICES * 4, gl.DYNAMIC_DRAW)
-		gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, null)
+		const renderer = new BatchRenderer(ggl, VERTEX_FORMAT, MAX_BATCHED_VERTS, MAX_BATCHED_INDICES)
 
 		// a checkerboard texture used for the default background
 		const bgTex = Texture.fromImage(
+			ggl,
 			new ImageData(new Uint8ClampedArray([
 				128, 128, 128, 255,
 				190, 190, 190, 255,
@@ -686,26 +487,16 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 
 		return {
 
-			// keep track of how many draw calls we're doing this frame
-			drawCalls: 0,
 			// how many draw calls we're doing last frame, this is the number we give to users
 			lastDrawCalls: 0,
 
 			// gfx states
 			defShader: defShader,
-			curShader: defShader,
+			defTex: emptyTex,
 			frameBuffer: frameBuffer,
 			postShader: null,
 			postShaderUniform: null,
-			defTex: emptyTex,
-			curTex: emptyTex,
-			curUniform: {},
-			vbuf: vbuf,
-			ibuf: ibuf,
-
-			// local vertex / index buffer queue
-			vqueue: [],
-			iqueue: [],
+			renderer: renderer,
 
 			transform: new Mat4(),
 			transformStack: [],
@@ -775,7 +566,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 		}
 
 		static fromURL(url: string, opt: LoadSpriteOpt = {}): Promise<SpriteData> {
-			return loadImg(url).then((img) => SpriteData.fromImage(img, opt))
+			return ass.loadImg(url).then((img) => SpriteData.fromImage(img, opt))
 		}
 
 	}
@@ -798,7 +589,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 			if (isDataURL(url)) {
 				return SoundData.fromArrayBuffer(dataURLToArrayBuffer(url))
 			} else {
-				return fetchArrayBuffer(url).then((buf) => SoundData.fromArrayBuffer(buf))
+				return ass.fetchArrayBuffer(url).then((buf) => SoundData.fromArrayBuffer(buf))
 			}
 		}
 
@@ -806,10 +597,10 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 
 	const audio = (() => {
 
-		// TODO: handle when audio context is unavailable
 		const ctx = new (
 			window.AudioContext || (window as any).webkitAudioContext
 		)() as AudioContext
+
 		const masterNode = ctx.createGain()
 		masterNode.connect(ctx.destination)
 
@@ -831,106 +622,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 
 	})()
 
-	class Asset<D> {
-		loaded: boolean = false
-		data: D | null = null
-		error: Error | null = null
-		private onLoadEvents: Event<[D]> = new Event()
-		private onErrorEvents: Event<[Error]> = new Event()
-		private onFinishEvents: Event<[]> = new Event()
-		constructor(loader: Promise<D>) {
-			loader.then((data) => {
-				this.data = data
-				this.onLoadEvents.trigger(data)
-			}).catch((err) => {
-				this.error = err
-				if (this.onErrorEvents.numListeners() > 0) {
-					this.onErrorEvents.trigger(err)
-				} else {
-					throw err
-				}
-			}).finally(() => {
-				this.onFinishEvents.trigger()
-				this.loaded = true
-			})
-		}
-		static loaded<D>(data: D): Asset<D> {
-			const asset = new Asset(Promise.resolve(data)) as Asset<D>
-			asset.data = data
-			asset.loaded = true
-			return asset
-		}
-		onLoad(action: (data: D) => void) {
-			if (this.loaded && this.data) {
-				action(this.data)
-			} else {
-				this.onLoadEvents.add(action)
-			}
-			return this
-		}
-		onError(action: (err: Error) => void) {
-			if (this.loaded && this.error) {
-				action(this.error)
-			} else {
-				this.onErrorEvents.add(action)
-			}
-			return this
-		}
-		onFinish(action: () => void) {
-			if (this.loaded) {
-				action()
-			} else {
-				this.onFinishEvents.add(action)
-			}
-			return this
-		}
-		then(action: (data: D) => void): Asset<D> {
-			return this.onLoad(action)
-		}
-		catch(action: (err: Error) => void): Asset<D> {
-			return this.onError(action)
-		}
-		finally(action: () => void): Asset<D> {
-			return this.onFinish(action)
-		}
-	}
-
-	class AssetBucket<D> {
-		assets: Map<string, Asset<D>> = new Map()
-		lastUID: number = 0
-		add(name: string | null, loader: Promise<D>): Asset<D> {
-			// if user don't provide a name we use a generated one
-			const id = name ?? (this.lastUID++ + "")
-			const asset = new Asset(loader)
-			this.assets.set(id, asset)
-			return asset
-		}
-		addLoaded(name: string | null, data: D): Asset<D> {
-			const id = name ?? (this.lastUID++ + "")
-			const asset = Asset.loaded(data)
-			this.assets.set(id, asset)
-			return asset
-		}
-		get(handle: string): Asset<D> | void {
-			return this.assets.get(handle)
-		}
-		progress(): number {
-			if (this.assets.size === 0) {
-				return 1
-			}
-			let loaded = 0
-			this.assets.forEach((asset) => {
-				if (asset.loaded) {
-					loaded++
-				}
-			})
-			return loaded / this.assets.size
-		}
-	}
-
 	const assets = {
-		// prefix for when loading from a url
-		urlPrefix: "",
 		// asset holders
 		sprites: new AssetBucket<SpriteData>(),
 		fonts: new AssetBucket<FontData>(),
@@ -938,7 +630,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 		sounds: new AssetBucket<SoundData>(),
 		shaders: new AssetBucket<ShaderData>(),
 		custom: new AssetBucket<any>(),
-		packer: new TexPacker(SPRITE_ATLAS_WIDTH, SPRITE_ATLAS_HEIGHT),
+		packer: new TexPacker(ggl, SPRITE_ATLAS_WIDTH, SPRITE_ATLAS_HEIGHT),
 		// if we finished initially loading all assets
 		loaded: false,
 	}
@@ -1001,7 +693,8 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 
 	}
 
-	// TODO: accept Asset<T>?
+	game.root.use(timer())
+
 	// wrap individual loaders with global loader counter, for stuff like progress bar
 	function load<T>(prom: Promise<T>): Asset<T> {
 		return assets.custom.add(null, prom)
@@ -1023,46 +716,13 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 	// global load path prefix
 	function loadRoot(path?: string): string {
 		if (path !== undefined) {
-			assets.urlPrefix = path
+			ass.setURLPrefix(path)
 		}
-		return assets.urlPrefix
-	}
-
-	// wrapper around fetch() that applies urlPrefix and basic error handling
-	function fetchURL(path: string) {
-		const url = assets.urlPrefix + path
-		return fetch(url)
-			.then((res) => {
-				if (!res.ok) throw new KaboomError(`Failed to fetch "${url}"`)
-				return res
-			})
-	}
-
-	function fetchJSON(path: string) {
-		return fetchURL(path).then((res) => res.json())
-	}
-
-	function fetchText(path: string) {
-		return fetchURL(path).then((res) => res.text())
-	}
-
-	function fetchArrayBuffer(path: string) {
-		return fetchURL(path).then((res) => res.arrayBuffer())
-	}
-
-	// wrapper around image loader to get a Promise
-	function loadImg(src: string): Promise<HTMLImageElement> {
-		const img = new Image()
-		img.crossOrigin = "anonymous"
-		img.src = isDataURL(src) ? src : assets.urlPrefix + src
-		return new Promise<HTMLImageElement>((resolve, reject) => {
-			img.onload = () => resolve(img)
-			img.onerror = () => reject(new KaboomError(`Failed to load image from "${src}"`))
-		})
+		return ass.getURLPrefix()
 	}
 
 	function loadJSON(name, url) {
-		return assets.custom.add(name, fetchJSON(url))
+		return assets.custom.add(name, ass.fetchJSON(url))
 	}
 
 	class FontData {
@@ -1096,7 +756,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 		const font = new FontFace(name, typeof src === "string" ? `url(${src})` : src)
 		document.fonts.add(font)
 		return assets.fonts.add(name, font.load().catch((err) => {
-			throw new KaboomError(`Failed to load font from "${src}": ${err}`)
+			throw new Error(`Failed to load font from "${src}": ${err}`)
 		}).then((face) => new FontData(face, opt)))
 	}
 
@@ -1109,10 +769,10 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 		gh: number,
 		opt: LoadBitmapFontOpt = {},
 	): Asset<BitmapFontData> {
-		return assets.bitmapFonts.add(name, loadImg(src)
+		return assets.bitmapFonts.add(name, ass.loadImg(src)
 			.then((img) => {
 				return makeFont(
-					Texture.fromImage(img, opt),
+					Texture.fromImage(ggl, img, opt),
 					gw,
 					gh,
 					opt.chars ?? ASCII_CHARS,
@@ -1146,7 +806,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 	): Asset<Record<string, SpriteData>> {
 		if (typeof data === "string") {
 			return load(new Promise((res, rej) => {
-				fetchJSON(data).then((json) => {
+				ass.fetchJSON(data).then((json) => {
 					loadSpriteAtlas(src, json).then(res).catch(rej)
 				})
 			}))
@@ -1188,15 +848,15 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 		const height = images[0].height
 		canvas.width = width * images.length
 		canvas.height = height
-		const ctx = canvas.getContext("2d")
+		const c2d = canvas.getContext("2d")
 		images.forEach((img, i) => {
 			if (img instanceof ImageData) {
-				ctx.putImageData(img, i * width, 0)
+				c2d.putImageData(img, i * width, 0)
 			} else {
-				ctx.drawImage(img, i * width, 0)
+				c2d.drawImage(img, i * width, 0)
 			}
 		})
-		const merged = ctx.getImageData(0, 0, images.length * width, height)
+		const merged = c2d.getImageData(0, 0, images.length * width, height)
 		return SpriteData.fromImage(merged, {
 			...opt,
 			sliceX: images.length,
@@ -1219,7 +879,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 				return assets.sprites.add(
 					name,
 					Promise.all(src.map((s) => {
-						return typeof s === "string" ? loadImg(s) : Promise.resolve(s)
+						return typeof s === "string" ? ass.loadImg(s) : Promise.resolve(s)
 					})).then((images) => createSpriteSheet(images, opt)),
 				)
 			} else {
@@ -1239,16 +899,16 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 		// eslint-disable-next-line
 		return assets.sprites.add(name, new Promise(async (resolve) => {
 
-			const data = typeof src === "string" ? await fetchJSON(src) : src
-			const images = await Promise.all(data.frames.map(loadImg))
+			const data = typeof src === "string" ? await ass.fetchJSON(src) : src
+			const images = await Promise.all(data.frames.map(ass.loadImg))
 			const canvas = document.createElement("canvas")
 			canvas.width = data.width
 			canvas.height = data.height * data.frames.length
 
-			const ctx = canvas.getContext("2d")
+			const c2d = canvas.getContext("2d")
 
 			images.forEach((img: HTMLImageElement, i) => {
-				ctx.drawImage(img, 0, i * data.height)
+				c2d.drawImage(img, 0, i * data.height)
 			})
 
 			const spr = await loadSprite(null, canvas, {
@@ -1271,7 +931,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 			jsonSrc = imgSrc.replace(new RegExp(`${getExt(imgSrc)}$`), "json")
 		}
 		const resolveJSON = typeof jsonSrc === "string"
-			? fetchJSON(jsonSrc)
+			? ass.fetchJSON(jsonSrc)
 			: Promise.resolve(jsonSrc)
 		return assets.sprites.add(name, resolveJSON.then((data) => {
 			const size = data.meta.size
@@ -1319,7 +979,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 	): Asset<ShaderData> {
 		const resolveUrl = (url?: string) =>
 			url
-				? fetchText(url)
+				? ass.fetchText(url)
 				: Promise.resolve(null)
 		const load = Promise.all([resolveUrl(vert), resolveUrl(frag)])
 			.then(([vcode, fcode]: [string | null, string | null]) => {
@@ -1383,14 +1043,14 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 				return null
 			} else {
 				// if all other assets are loaded and we still haven't found this sprite, throw
-				throw new KaboomError(`Sprite not found: ${src}`)
+				throw new Error(`Sprite not found: ${src}`)
 			}
 		} else if (src instanceof SpriteData) {
 			return Asset.loaded(src)
 		} else if (src instanceof Asset) {
 			return src
 		} else {
-			throw new KaboomError(`Invalid sprite: ${src}`)
+			throw new Error(`Invalid sprite: ${src}`)
 		}
 	}
 
@@ -1404,14 +1064,14 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 			} else if (loadProgress() < 1) {
 				return null
 			} else {
-				throw new KaboomError(`Sound not found: ${src}`)
+				throw new Error(`Sound not found: ${src}`)
 			}
 		} else if (src instanceof SoundData) {
 			return Asset.loaded(src)
 		} else if (src instanceof Asset) {
 			return src
 		} else {
-			throw new KaboomError(`Invalid sound: ${src}`)
+			throw new Error(`Invalid sound: ${src}`)
 		}
 	}
 
@@ -1428,7 +1088,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 			} else if (loadProgress() < 1) {
 				return null
 			} else {
-				throw new KaboomError(`Shader not found: ${src}`)
+				throw new Error(`Shader not found: ${src}`)
 			}
 		} else if (src instanceof Asset) {
 			return src.data ? src.data : src
@@ -1463,7 +1123,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 			} else if (loadProgress() < 1) {
 				return null
 			} else {
-				throw new KaboomError(`Font not found: ${src}`)
+				throw new Error(`Font not found: ${src}`)
 			}
 		} else if (src instanceof Asset) {
 			return src.data ? src.data : src
@@ -1667,100 +1327,27 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 		anchor?: Anchor | Vec2,
 	}
 
+	function makeCanvas(w: number, h: number) {
+		return new FrameBuffer(ggl, w, h)
+	}
+
 	function makeShader(
 		vertSrc: string | null = DEF_VERT,
 		fragSrc: string | null = DEF_FRAG,
-	): GfxShader {
-
+	): Shader {
 		const vcode = VERT_TEMPLATE.replace("{{user}}", vertSrc ?? DEF_VERT)
 		const fcode = FRAG_TEMPLATE.replace("{{user}}", fragSrc ?? DEF_FRAG)
-		const vertShader = gl.createShader(gl.VERTEX_SHADER)
-		const fragShader = gl.createShader(gl.FRAGMENT_SHADER)
-
-		gl.shaderSource(vertShader, vcode)
-		gl.shaderSource(fragShader, fcode)
-		gl.compileShader(vertShader)
-		gl.compileShader(fragShader)
-
-		const prog = gl.createProgram()
-
-		gc.push(() => gl.deleteProgram(prog))
-		gl.attachShader(prog, vertShader)
-		gl.attachShader(prog, fragShader)
-
-		gl.bindAttribLocation(prog, 0, "a_pos")
-		gl.bindAttribLocation(prog, 1, "a_uv")
-		gl.bindAttribLocation(prog, 2, "a_color")
-
-		gl.linkProgram(prog)
-
-		if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
-
-			const formatShaderError = (msg: string) => {
-				const FMT = /^ERROR:\s0:(?<line>\d+):\s(?<msg>.+)/
-				const match = msg.match(FMT)
-				return {
-					line: Number(match.groups.line),
-					// seem to be a \n\0 at the end of error messages, causing unwanted line break
-					msg: match.groups.msg.replace(/\n\0$/, ""),
-				}
-			}
-
-			const vertError = gl.getShaderInfoLog(vertShader)
-			const fragError = gl.getShaderInfoLog(fragShader)
-			let msg = ""
-
-			if (vertError) {
-				const err = formatShaderError(vertError)
-				msg += `Vertex shader line ${err.line - 14}: ${err.msg}`
-			}
-
-			if (fragError) {
-				const err = formatShaderError(fragError)
-				msg += `Fragment shader line ${err.line - 14}: ${err.msg}`
-			}
-
-			throw new KaboomError(msg)
-
+		try {
+			return new Shader(ggl, vcode, fcode, VERTEX_FORMAT.map((vert) => vert.name))
+		} catch (e) {
+			const lineOffset = 14
+			const fmt = /(?<type>^\w+) SHADER ERROR: 0:(?<line>\d+): (?<msg>.+)/
+			const match = getErrorMessage(e).match(fmt)
+			const line = Number(match.groups.line) - lineOffset
+			const msg = match.groups.msg.trim()
+			const ty = match.groups.type.toLowerCase()
+			throw new Error(`${ty} shader line ${line}: ${msg}`)
 		}
-
-		gl.deleteShader(vertShader)
-		gl.deleteShader(fragShader)
-
-		return {
-
-			bind() {
-				gl.useProgram(prog)
-			},
-
-			unbind() {
-				gl.useProgram(null)
-			},
-
-			free() {
-				gl.deleteProgram(prog)
-			},
-
-			// TODO: support vec3 and vec4
-			send(uniform: Uniform) {
-				for (const name in uniform) {
-					const val = uniform[name]
-					const loc = gl.getUniformLocation(prog, name)
-					if (typeof val === "number") {
-						gl.uniform1f(loc, val)
-					} else if (val instanceof Mat4) {
-						gl.uniformMatrix4fv(loc, false, new Float32Array(val.m))
-					} else if (val instanceof Color) {
-						// TODO: opacity?
-						gl.uniform3f(loc, val.r, val.g, val.b)
-					} else if (val instanceof Vec2) {
-						gl.uniform2f(loc, val.x, val.y)
-					}
-				}
-			},
-
-		}
-
 	}
 
 	function makeFont(
@@ -1807,71 +1394,29 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 			return
 		}
 
-		// flush on texture / shader change and overflow
-		if (
-			tex !== gfx.curTex
-			|| shader !== gfx.curShader
-			|| !deepEq(gfx.curUniform, uniform)
-			|| gfx.vqueue.length + verts.length * STRIDE > MAX_BATCHED_VERTS
-			|| gfx.iqueue.length + indices.length > MAX_BATCHED_INDICES
-		) {
-			flush()
-		}
-
 		const transform = (gfx.fixed || fixed)
 			? gfx.transform
 			: game.cam.transform.mult(gfx.transform)
 
+		const vv = []
+
 		for (const v of verts) {
 			// normalized world space coordinate [-1.0 ~ 1.0]
 			const pt = screen2ndc(transform.multVec2(v.pos))
-			gfx.vqueue.push(
+			vv.push(
 				pt.x, pt.y,
 				v.uv.x, v.uv.y,
 				v.color.r / 255, v.color.g / 255, v.color.b / 255, v.opacity,
 			)
 		}
 
-		for (const i of indices) {
-			gfx.iqueue.push(i + gfx.vqueue.length / STRIDE - verts.length)
-		}
-
-		gfx.curTex = tex
-		gfx.curShader = shader
-		gfx.curUniform = uniform
+		gfx.renderer.push(gl.TRIANGLES, vv, indices, shader, tex, uniform)
 
 	}
 
 	// draw all batched shapes
 	function flush() {
-
-		if (
-			!gfx.curTex
-			|| !gfx.curShader
-			|| gfx.vqueue.length === 0
-			|| gfx.iqueue.length === 0
-		) {
-			return
-		}
-
-		gl.bindBuffer(gl.ARRAY_BUFFER, gfx.vbuf)
-		gl.bufferSubData(gl.ARRAY_BUFFER, 0, new Float32Array(gfx.vqueue))
-		gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, gfx.ibuf)
-		gl.bufferSubData(gl.ELEMENT_ARRAY_BUFFER, 0, new Uint16Array(gfx.iqueue))
-		gfx.curShader.bind()
-		gfx.curShader.send(gfx.curUniform)
-		gfx.curTex.bind()
-		gl.drawElements(gl.TRIANGLES, gfx.iqueue.length, gl.UNSIGNED_SHORT, 0)
-		gfx.curTex.unbind()
-		gfx.curShader.unbind()
-		gl.bindBuffer(gl.ARRAY_BUFFER, null)
-		gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, null)
-
-		gfx.vqueue.length = 0
-		gfx.iqueue.length = 0
-
-		gfx.drawCalls++
-
+		gfx.renderer.flush()
 	}
 
 	// start a rendering frame, reset some states
@@ -1880,7 +1425,6 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 		// clear backbuffer
 		gl.clear(gl.COLOR_BUFFER_BIT)
 		gfx.frameBuffer.bind()
-		gl.viewport(0, 0, gfx.frameBuffer.width, gfx.frameBuffer.height)
 		// clear framebuffer
 		gl.clear(gl.COLOR_BUFFER_BIT)
 
@@ -1901,7 +1445,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 			})
 		}
 
-		gfx.drawCalls = 0
+		gfx.renderer.numDraws = 0
 		gfx.fixed = false
 		gfx.transformStack.length = 0
 		gfx.transform = new Mat4()
@@ -1914,13 +1458,14 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 	}
 
 	function frameEnd() {
+
 		// TODO: don't render debug UI with framebuffer
 		// TODO: polish framebuffer rendering / sizing issues
 		flush()
+		gfx.lastDrawCalls = gfx.renderer.numDraws
 		gfx.frameBuffer.unbind()
 		gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight)
 
-		flush()
 		const ow = gfx.width
 		const oh = gfx.height
 		gfx.width = gl.drawingBufferWidth / pixelDensity
@@ -1942,7 +1487,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 		flush()
 		gfx.width = ow
 		gfx.height = oh
-		gfx.lastDrawCalls = gfx.drawCalls
+
 	}
 
 	// convert a screen space coordinate to webgl normalized device coordinate
@@ -1990,7 +1535,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 	function drawUVQuad(opt: DrawUVQuadOpt) {
 
 		if (opt.width === undefined || opt.height === undefined) {
-			throw new KaboomError("drawUVQuad() requires property \"width\" and \"height\".")
+			throw new Error("drawUVQuad() requires property \"width\" and \"height\".")
 		}
 
 		if (opt.width <= 0 || opt.height <= 0) {
@@ -2054,7 +1599,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 	function drawTexture(opt: DrawTextureOpt) {
 
 		if (!opt.tex) {
-			throw new KaboomError("drawTexture() requires property \"tex\".")
+			throw new Error("drawTexture() requires property \"tex\".")
 		}
 
 		const q = opt.quad ?? new Quad(0, 0, 1, 1)
@@ -2113,7 +1658,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 	function drawSprite(opt: DrawSpriteOpt) {
 
 		if (!opt.sprite) {
-			throw new KaboomError("drawSprite() requires property \"sprite\"")
+			throw new Error("drawSprite() requires property \"sprite\"")
 		}
 
 		// TODO: slow
@@ -2126,7 +1671,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 		const q = spr.data.frames[opt.frame ?? 0]
 
 		if (!q) {
-			throw new KaboomError(`Frame not found: ${opt.frame ?? 0}`)
+			throw new Error(`Frame not found: ${opt.frame ?? 0}`)
 		}
 
 		drawTexture(Object.assign({}, opt, {
@@ -2169,7 +1714,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 	function drawRect(opt: DrawRectOpt) {
 
 		if (opt.width === undefined || opt.height === undefined) {
-			throw new KaboomError("drawRect() requires property \"width\" and \"height\".")
+			throw new Error("drawRect() requires property \"width\" and \"height\".")
 		}
 
 		if (opt.width <= 0 || opt.height <= 0) {
@@ -2237,7 +1782,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 		const { p1, p2 } = opt
 
 		if (!p1 || !p2) {
-			throw new KaboomError("drawLine() requires properties \"p1\" and \"p2\".")
+			throw new Error("drawLine() requires properties \"p1\" and \"p2\".")
 		}
 
 		const w = opt.width || 1
@@ -2267,7 +1812,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 		const pts = opt.pts
 
 		if (!pts) {
-			throw new KaboomError("drawLines() requires property \"pts\".")
+			throw new Error("drawLines() requires property \"pts\".")
 		}
 
 		if (pts.length < 2) {
@@ -2325,7 +1870,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 
 	function drawTriangle(opt: DrawTriangleOpt) {
 		if (!opt.p1 || !opt.p2 || !opt.p3) {
-			throw new KaboomError("drawPolygon() requires properties \"p1\", \"p2\" and \"p3\".")
+			throw new Error("drawTriangle() requires properties \"p1\", \"p2\" and \"p3\".")
 		}
 		return drawPolygon(Object.assign({}, opt, {
 			pts: [opt.p1, opt.p2, opt.p3],
@@ -2335,7 +1880,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 	function drawCircle(opt: DrawCircleOpt) {
 
 		if (typeof opt.radius !== "number") {
-			throw new KaboomError("drawCircle() requires property \"radius\".")
+			throw new Error("drawCircle() requires property \"radius\".")
 		}
 
 		if (opt.radius === 0) {
@@ -2353,7 +1898,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 	function drawEllipse(opt: DrawEllipseOpt) {
 
 		if (opt.radiusX === undefined || opt.radiusY === undefined) {
-			throw new KaboomError("drawEllipse() requires properties \"radiusX\" and \"radiusY\".")
+			throw new Error("drawEllipse() requires properties \"radiusX\" and \"radiusY\".")
 		}
 
 		if (opt.radiusX === 0 || opt.radiusY === 0) {
@@ -2408,7 +1953,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 	function drawPolygon(opt: DrawPolygonOpt) {
 
 		if (!opt.pts) {
-			throw new KaboomError("drawPolygon() requires property \"pts\".")
+			throw new Error("drawPolygon() requires property \"pts\".")
 		}
 
 		const npts = opt.pts.length
@@ -2531,7 +2076,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 		if (tr.pos) fchar.pos = fchar.pos.add(tr.pos)
 		if (tr.scale) fchar.scale = fchar.scale.scale(vec2(tr.scale))
 		if (tr.angle) fchar.angle += tr.angle
-		if (tr.color) fchar.color = fchar.color.mult(tr.color)
+		if (tr.color && fchar.ch.length === 1) fchar.color = fchar.color.mult(tr.color)
 		if (tr.opacity) fchar.opacity *= tr.opacity
 	}
 
@@ -2580,7 +2125,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 	function formatText(opt: DrawTextOpt): FormattedText {
 
 		if (opt.text === undefined) {
-			throw new KaboomError("formatText() requires property \"text\".")
+			throw new Error("formatText() requires property \"text\".")
 		}
 
 		let font = resolveFont(opt.font)
@@ -2596,7 +2141,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 		}
 
 		const { charStyleMap, text } = compileStyledText(opt.text + "")
-		const chars = text.split("")
+		const chars = runes(text)
 
 		// if it's not bitmap font, we draw it with 2d canvas or use cached image
 		if (font instanceof FontData || typeof font === "string") {
@@ -2616,7 +2161,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 			// TODO: customizable font tex filter
 			const atlas: FontAtlas = fontAtlases[fontName] ?? {
 				font: {
-					tex: new Texture(FONT_ATLAS_WIDTH, FONT_ATLAS_HEIGHT, {
+					tex: new Texture(ggl, FONT_ATLAS_WIDTH, FONT_ATLAS_HEIGHT, {
 						filter: opts.filter,
 					}),
 					map: {},
@@ -2637,7 +2182,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 				if (!atlas.font.map[ch]) {
 
 					// TODO: use assets.packer to pack font texture
-					const c2d = fontCacheCtx
+					const c2d = fontCacheC2d
 					c2d.clearRect(0, 0, fontCacheCanvas.width, fontCacheCanvas.height)
 					c2d.font = `${font.size}px ${fontName}`
 					c2d.textBaseline = "top"
@@ -2664,7 +2209,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 						atlas.cursor.y += h
 						if (atlas.cursor.y > FONT_ATLAS_HEIGHT) {
 							// TODO: create another atlas
-							throw new KaboomError("Font atlas exceeds character limit")
+							throw new Error("Font atlas exceeds character limit")
 						}
 					}
 
@@ -2885,8 +2430,6 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 		return gfx.height
 	}
 
-	const winEvents: EventList<WindowEventMap> = {}
-
 	// transform a point from window space to content space
 	function windowToContent(pt: Vec2) {
 		return new Vec2(
@@ -2907,24 +2450,6 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 		return windowToContent(app.mousePos())
 	}
 
-	winEvents.error = (e) => {
-		if (e.error && e.error instanceof KaboomError) {
-			handleErr(e.error)
-		} else if (e instanceof KaboomError) {
-			handleErr(e)
-		}
-	}
-
-	winEvents.unhandledrejection = (e) => {
-		if (e.reason instanceof KaboomError) {
-			handleErr(e.reason)
-		}
-	}
-
-	for (const name in winEvents) {
-		window.addEventListener(name, winEvents[name])
-	}
-
 	let debugPaused = false
 
 	const debug: Debug = {
@@ -2934,7 +2459,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 		fps: () => app.fps(),
 		numFrames: () => app.numFrames(),
 		stepFrame: updateFrame,
-		drawCalls: () => gfx.drawCalls,
+		drawCalls: () => gfx.lastDrawCalls,
 		clearLog: () => game.logs = [],
 		log: (msg) => {
 			const max = gopt.logMax ?? LOG_MAX
@@ -2946,7 +2471,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 				game.logs = game.logs.slice(0, max)
 			}
 		},
-		error: (msg) => debug.log(new KaboomError(msg.toString ? msg.toString() : msg as string)),
+		error: (msg) => debug.log(new Error(msg.toString ? msg.toString() : msg as string)),
 		curRecording: null,
 		numObjects: () => get("*", { recursive: true }).length,
 		get paused() {
@@ -3016,7 +2541,6 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 		let onCurCompCleanup = null
 		let paused = false
 
-		// TODO
 		// @ts-ignore
 		const obj: GameObj = {
 
@@ -3042,7 +2566,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 			add<T2>(a: CompList<T2> | GameObj<T2> = []): GameObj<T2> {
 				const obj = Array.isArray(a) ? make(a) : a
 				if (obj.parent) {
-					throw new KaboomError("Cannot add a game obj that already has a parent.")
+					throw new Error("Cannot add a game obj that already has a parent.")
 				}
 				obj.parent = this
 				obj.transform = calcTransform(obj)
@@ -3095,6 +2619,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 
 			draw(this: GameObj<PosComp | ScaleComp | RotateComp | FixedComp | MaskComp>) {
 				if (this.hidden) return
+				if (this.canvas) this.canvas.bind()
 				const f = gfx.fixed
 				if (this.fixed) gfx.fixed = true
 				pushTransform()
@@ -3109,7 +2634,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 						subtract: drawSubtracted,
 					}[this.mask]
 					if (!maskFunc) {
-						throw new KaboomError(`Invalid mask func: "${this.mask}"`)
+						throw new Error(`Invalid mask func: "${this.mask}"`)
 					}
 					maskFunc(() => {
 						children.forEach((child) => child.draw())
@@ -3122,6 +2647,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 				}
 				popTransform()
 				gfx.fixed = f
+				if (this.canvas) this.canvas.unbind()
 			},
 
 			drawInspect(this: GameObj<PosComp | ScaleComp | RotateComp>) {
@@ -3204,7 +2730,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 							})
 							gc.push(() => delete this[k])
 						} else {
-							throw new KaboomError(`Duplicate component property: "${k}"`)
+							throw new Error(`Duplicate component property: "${k}"`)
 						}
 					}
 
@@ -3215,7 +2741,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 					if (!comp.require) return
 					for (const dep of comp.require) {
 						if (!this.c(dep)) {
-							throw new KaboomError(`Component "${comp.id}" requires component "${dep}"`)
+							throw new Error(`Component "${comp.id}" requires component "${dep}"`)
 						}
 					}
 				}
@@ -3267,19 +2793,25 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 							? this.isAncestorOf(obj)
 							: obj.parent === this
 					}
+					const events = []
 					// TODO: handle when object add / remove tags
 					// TODO: clean up when obj destroyed
-					onAdd((obj) => {
+					events.push(onAdd((obj) => {
 						if (isChild(obj) && obj.is(t)) {
 							list.push(obj)
 						}
-					})
-					onDestroy((obj) => {
+					}))
+					events.push(onDestroy((obj) => {
 						if (isChild(obj) && obj.is(t)) {
 							const idx = list.findIndex((o) => o.id === obj.id)
 							if (idx !== -1) {
 								list.splice(idx, 1)
 							}
+						}
+					}))
+					this.onDestroy(() => {
+						for (const ev of events) {
+							ev.cancel()
 						}
 					})
 				}
@@ -3405,7 +2937,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 	// add an event to a tag
 	function on(event: string, tag: Tag, cb: (obj: GameObj, ...args) => void): EventController {
 		if (!game.objEvents[event]) {
-			game.objEvents[event] = new IDList()
+			game.objEvents[event] = new Registry()
 		}
 		return game.objEvents.on(event, (obj, ...args) => {
 			if (obj.is(tag)) {
@@ -3414,57 +2946,47 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 		})
 	}
 
-	// add update event to a tag or global update
-	const onUpdate = ((tag: Tag | (() => void), action?: (obj: GameObj) => void) => {
-		if (typeof tag === "function" && action === undefined) {
-			const obj = add([{ update: tag }])
-			return {
-				get paused() {
-					return obj.paused
-				},
-				set paused(p) {
-					obj.paused = p
-				},
-				cancel: () => obj.destroy(),
-			}
-		} else if (typeof tag === "string") {
-			return on("update", tag, action)
+	const onUpdate = overload2((action: () => void): EventController => {
+		const obj = add([{ update: action }])
+		return {
+			get paused() {
+				return obj.paused
+			},
+			set paused(p) {
+				obj.paused = p
+			},
+			cancel: () => obj.destroy(),
 		}
-	}) as KaboomCtx["onUpdate"]
+	}, (tag: Tag, action: (obj: GameObj) => void) => {
+		return on("update", tag, action)
+	})
 
-	// add draw event to a tag or global draw
-	const onDraw = ((tag: Tag | (() => void), action?: (obj: GameObj) => void) => {
-		if (typeof tag === "function" && action === undefined) {
-			const obj = add([{ draw: tag }])
-			return {
-				get paused() {
-					return obj.hidden
-				},
-				set paused(p) {
-					obj.hidden = p
-				},
-				cancel: () => obj.destroy(),
-			}
-		} else if (typeof tag === "string") {
-			return on("draw", tag, action)
+	const onDraw = overload2((action: () => void): EventController => {
+		const obj = add([{ draw: action }])
+		return {
+			get paused() {
+				return obj.hidden
+			},
+			set paused(p) {
+				obj.hidden = p
+			},
+			cancel: () => obj.destroy(),
 		}
-	}) as KaboomCtx["onDraw"]
+	}, (tag: Tag, action: (obj: GameObj) => void) => {
+		return on("draw", tag, action)
+	})
 
-	function onAdd(tag: Tag | ((obj: GameObj) => void), action?: (obj: GameObj) => void) {
-		if (typeof tag === "function" && action === undefined) {
-			return game.events.on("add", tag)
-		} else if (typeof tag === "string") {
-			return on("add", tag, action)
-		}
-	}
+	const onAdd = overload2((action: (obj: GameObj) => void) => {
+		return game.events.on("add", action)
+	}, (tag: Tag, action: (obj: GameObj) => void) => {
+		return on("add", tag, action)
+	})
 
-	function onDestroy(tag: Tag | ((obj: GameObj) => void), action?: (obj: GameObj) => void) {
-		if (typeof tag === "function" && action === undefined) {
-			return game.events.on("destroy", tag)
-		} else if (typeof tag === "string") {
-			return on("destroy", tag, action)
-		}
-	}
+	const onDestroy = overload2((action: (obj: GameObj) => void) => {
+		return game.events.on("destroy", action)
+	}, (tag: Tag, action: (obj: GameObj) => void) => {
+		return on("destroy", tag, action)
+	})
 
 	// add an event that runs with objs with t1 collides with objs with t2
 	function onCollide(
@@ -3496,27 +3018,24 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 		onAdd(t, action)
 	}
 
-	// add an event that runs when objs with tag t is clicked
-	function onClick(tag: Tag | (() => void), action?: (obj: GameObj) => void): EventController {
-		if (typeof tag === "function") {
-			return app.onMousePress(tag)
-		} else {
-			const events = []
-			forAllCurrentAndFuture(tag, (obj) => {
-				if (!obj.area)
-					throw new KaboomError("onClick() requires the object to have area() component")
-				events.push(obj.onClick(() => action(obj)))
-			})
-			return EventController.join(events)
-		}
-	}
+	const onClick = overload2((action: () => void) => {
+		return app.onMousePress(action)
+	}, (tag: Tag, action: (obj: GameObj) => void) => {
+		const events = []
+		forAllCurrentAndFuture(tag, (obj) => {
+			if (!obj.area)
+				throw new Error("onClick() requires the object to have area() component")
+			events.push(obj.onClick(() => action(obj)))
+		})
+		return EventController.join(events)
+	})
 
 	// add an event that runs once when objs with tag t is hovered
 	function onHover(t: Tag, action: (obj: GameObj) => void): EventController {
 		const events = []
 		forAllCurrentAndFuture(t, (obj) => {
 			if (!obj.area)
-				throw new KaboomError("onHover() requires the object to have area() component")
+				throw new Error("onHover() requires the object to have area() component")
 			events.push(obj.onHover(() => action(obj)))
 		})
 		return EventController.join(events)
@@ -3527,7 +3046,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 		const events = []
 		forAllCurrentAndFuture(t, (obj) => {
 			if (!obj.area)
-				throw new KaboomError("onHoverUpdate() requires the object to have area() component")
+				throw new Error("onHoverUpdate() requires the object to have area() component")
 			events.push(obj.onHoverUpdate(() => action(obj)))
 		})
 		return EventController.join(events)
@@ -3538,94 +3057,10 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 		const events = []
 		forAllCurrentAndFuture(t, (obj) => {
 			if (!obj.area)
-				throw new KaboomError("onHoverEnd() requires the object to have area() component")
+				throw new Error("onHoverEnd() requires the object to have area() component")
 			events.push(obj.onHoverEnd(() => action(obj)))
 		})
 		return EventController.join(events)
-	}
-
-	// TODO: use PromiseLike?
-	// TODO: use root game object and timer()?
-	// add an event that'd be run after t
-	function wait(time: number, action?: () => void): TimerController {
-		let t = 0
-		const actions = []
-		if (action) actions.push(action)
-		const ev = onUpdate(() => {
-			t += dt()
-			if (t >= time) {
-				ev.cancel()
-				actions.forEach((action) => action())
-			}
-		})
-		return {
-			paused: ev.paused,
-			cancel: ev.cancel,
-			onEnd(action) {
-				actions.push(action)
-			},
-			then(action) {
-				this.onEnd(action)
-				return this
-			},
-		}
-	}
-
-	// add an event that's run every t seconds
-	function loop(t: number, action: () => void): EventController {
-
-		let curTimer: null | TimerController = null
-
-		const newAction = () => {
-			// TODO: should f be execute right away as loop() is called?
-			curTimer = wait(t, newAction)
-			action()
-		}
-
-		curTimer = wait(0, newAction)
-
-		return {
-			get paused() {
-				return curTimer.paused
-			},
-			set paused(p) {
-				curTimer.paused = p
-			},
-			cancel: () => curTimer.cancel(),
-		}
-
-	}
-
-	function enterDebugMode() {
-
-		app.onKeyPress("f1", () => {
-			debug.inspect = !debug.inspect
-		})
-
-		app.onKeyPress("f2", () => {
-			debug.clearLog()
-		})
-
-		app.onKeyPress("f8", () => {
-			debug.paused = !debug.paused
-		})
-
-		app.onKeyPress("f7", () => {
-			debug.timeScale = toFixed(clamp(debug.timeScale - 0.2, 0, 2), 1)
-		})
-
-		app.onKeyPress("f9", () => {
-			debug.timeScale = toFixed(clamp(debug.timeScale + 0.2, 0, 2), 1)
-		})
-
-		app.onKeyPress("f10", () => {
-			debug.stepFrame()
-		})
-
-	}
-
-	function enterBurpMode() {
-		app.onKeyPress("b", () => burp())
 	}
 
 	function setGravity(g: number) {
@@ -3787,7 +3222,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 
 	function anchor(o: Anchor | Vec2): AnchorComp {
 		if (!o) {
-			throw new KaboomError("Please define an anchor")
+			throw new Error("Please define an anchor")
 		}
 		return {
 			id: "anchor",
@@ -3992,6 +3427,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 				return Object.values(colliding)
 			},
 
+			// TODO: perform check instead of use cache
 			isColliding(other: GameObj<AreaComp>) {
 				return Boolean(colliding[other.id])
 			},
@@ -4113,7 +3549,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 				const localArea = this.localArea()
 
 				if (!(localArea instanceof Polygon || localArea instanceof Rect)) {
-					throw new KaboomError("Only support polygon and rect shapes for now")
+					throw new Error("Only support polygon and rect shapes for now")
 				}
 
 				const transform = this.transform
@@ -4171,7 +3607,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 		const spriteLoadedEvent = new Event<[SpriteData]>()
 
 		if (!src) {
-			throw new KaboomError("Please pass the resource name or data to sprite()")
+			throw new Error("Please pass the resource name or data to sprite()")
 		}
 
 		const calcTexScale = (tex: Texture, q: Quad, w?: number, h?: number): Vec2 => {
@@ -4208,7 +3644,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 				const q = spriteData.frames[this.frame ?? 0]
 
 				if (!q) {
-					throw new KaboomError(`Frame not found: ${this.frame ?? 0}`)
+					throw new Error(`Frame not found: ${this.frame ?? 0}`)
 				}
 
 				if (spriteData.slice9) {
@@ -4324,7 +3760,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 				}
 
 				if (anim.speed === 0) {
-					throw new KaboomError("Sprite anim speed cannot be 0")
+					throw new Error("Sprite anim speed cannot be 0")
 				}
 
 				curAnim.timer += dt() * this.animSpeed
@@ -4365,7 +3801,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 				const anim = spriteData.anims[name]
 
 				if (anim === undefined) {
-					throw new KaboomError(`Anim not found: ${name}`)
+					throw new Error(`Anim not found: ${name}`)
 				}
 
 				if (curAnim) {
@@ -4474,13 +3910,20 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 
 		}
 
-		return {
+		const obj = {
 
 			id: "text",
-			text: t,
+			set text(nt) {
+				t = nt
+				// @ts-ignore
+				update(this)
+			},
+			get text() {
+				return t
+			},
 			textSize: opt.size ?? DEF_TEXT_SIZE,
 			font: opt.font,
-			width: opt.width,
+			width: opt.width ?? 0,
 			height: 0,
 			align: opt.align,
 			lineSpacing: opt.lineSpacing,
@@ -4502,6 +3945,11 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 
 		}
 
+		// @ts-ignore
+		update(obj)
+
+		return obj
+
 	}
 
 	function rect(w: number, h: number, opt: RectCompOpt = {}): RectComp {
@@ -4515,6 +3963,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 					width: this.width,
 					height: this.height,
 					radius: this.radius,
+					fill: opt.fill,
 				}))
 			},
 			renderArea() {
@@ -4546,13 +3995,14 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 		}
 	}
 
-	function circle(radius: number): CircleComp {
+	function circle(radius: number, opt: CircleCompOpt = {}): CircleComp {
 		return {
 			id: "circle",
 			radius: radius,
 			draw(this: GameObj<CircleComp>) {
 				drawCircle(Object.assign(getRenderProps(this), {
 					radius: this.radius,
+					fill: opt.fill,
 				}))
 			},
 			renderArea(this: GameObj<AnchorComp | CircleComp>) {
@@ -4695,7 +4145,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 			add(this: GameObj<PosComp | BodyComp | AreaComp>) {
 
 				if (this.mass === 0) {
-					throw new KaboomError("Can't set body mass to 0")
+					throw new Error("Can't set body mass to 0")
 				}
 
 				// static vs static: don't resolve
@@ -4780,7 +4230,8 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 
 				if (curPlatform) {
 					if (
-						!this.isOverlapping(curPlatform)
+						// TODO: this prevents from falling when on edge
+						!this.isColliding(curPlatform)
 						|| !curPlatform.exists()
 						|| !curPlatform.is("body")
 					) {
@@ -4902,7 +4353,6 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 		}
 	}
 
-	// TODO: all children should be fixed
 	function fixed(): FixedComp {
 		return {
 			id: "fixed",
@@ -4918,11 +4368,10 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 		}
 	}
 
-	function health(hp: number): HealthComp {
+	function health(hp: number, maxHP?: number): HealthComp {
 		if (hp == null) {
-			throw new KaboomError("health() requires the initial amount of hp")
+			throw new Error("health() requires the initial amount of hp")
 		}
-		const maxHP = hp
 		return {
 			id: "health",
 			hurt(this: GameObj, n: number = 1) {
@@ -4930,17 +4379,21 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 				this.trigger("hurt", n)
 			},
 			heal(this: GameObj, n: number = 1) {
+				const origHP = hp
 				this.setHP(hp + n)
-				this.trigger("heal", n)
+				this.trigger("heal", hp - origHP)
 			},
 			hp(): number {
 				return hp
 			},
-			maxHP(): number {
-				return maxHP
+			maxHP(): number | null {
+				return maxHP ?? null
+			},
+			setMaxHP(n: number): void {
+				maxHP = n
 			},
 			setHP(this: GameObj, n: number) {
-				hp = n
+				hp = maxHP ? Math.min(maxHP, n) : n
 				if (hp <= 0) {
 					this.trigger("death")
 				}
@@ -4962,7 +4415,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 
 	function lifespan(time: number, opt: LifespanCompOpt = {}): EmptyComp {
 		if (time == null) {
-			throw new KaboomError("lifespan() requires time")
+			throw new Error("lifespan() requires time")
 		}
 		const fade = opt.fade ?? 0
 		return {
@@ -4985,7 +4438,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 	): StateComp {
 
 		if (!initState) {
-			throw new KaboomError("state() requires an initial state")
+			throw new Error("state() requires an initial state")
 		}
 
 		const events = {}
@@ -5023,7 +4476,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 				didFirstEnter = true
 
 				if (stateList && !stateList.includes(state)) {
-					throw new KaboomError(`State not found: ${state}`)
+					throw new Error(`State not found: ${state}`)
 				}
 
 				const oldState = this.state
@@ -5040,7 +4493,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 						: transitions[oldState] as string[]
 
 					if (!available.includes(state)) {
-						throw new KaboomError(`Cannot transition state from "${oldState}" to "${state}". Available transitions: ${available.map((s) => `"${s}"`).join(", ")}`)
+						throw new Error(`Cannot transition state from "${oldState}" to "${state}". Available transitions: ${available.map((s) => `"${s}"`).join(", ")}`)
 					}
 
 				}
@@ -5120,6 +4573,14 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 		}
 	}
 
+	function drawon(c: FrameBuffer) {
+		return {
+			add(this: GameObj) {
+				this.canvas = c
+			},
+		}
+	}
+
 	function onLoad(cb: () => void): void {
 		if (assets.loaded) {
 			cb()
@@ -5135,7 +4596,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 	function go(name: SceneName, ...args) {
 
 		if (!game.scenes[name]) {
-			throw new KaboomError(`Scene not found: ${name}`)
+			throw new Error(`Scene not found: ${name}`)
 		}
 
 		game.events.onOnce("frameEnd", () => {
@@ -5155,6 +4616,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 			})
 
 			game.root.clearEvents()
+			initEvents()
 
 			// cam
 			game.cam = {
@@ -5166,14 +4628,6 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 			}
 
 			game.scenes[name](...args)
-
-			if (gopt.debug !== false) {
-				enterDebugMode()
-			}
-
-			if (gopt.burp) {
-				enterBurpMode()
-			}
 
 		})
 
@@ -5343,7 +4797,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 	function addLevel(map: string[], opt: LevelOpt): GameObj<PosComp | LevelComp> {
 
 		if (!opt.tileWidth || !opt.tileHeight) {
-			throw new KaboomError("Must provide tileWidth and tileHeight.")
+			throw new Error("Must provide tileWidth and tileHeight.")
 		}
 
 		// TODO: custom parent
@@ -5576,7 +5030,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 					if (typeof key === "string") {
 						if (opt.tiles[key]) {
 							if (typeof opt.tiles[key] !== "function") {
-								throw new KaboomError("Level symbol def must be a function returning a component list")
+								throw new Error("Level symbol def must be a function returning a component list")
 							}
 							return opt.tiles[key](p)
 						} else if (opt.wildcardTile) {
@@ -5585,7 +5039,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 					} else if (Array.isArray(key)) {
 						return key
 					} else {
-						throw new KaboomError("Expected a symbol or a component list")
+						throw new Error("Expected a symbol or a component list")
 					}
 				})()
 
@@ -5987,15 +5441,17 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 	}
 
 	// aliases for root game obj operations
-	const add: KaboomCtx["add"] = game.root.add.bind(game.root)
-	const readd: KaboomCtx["readd"] = game.root.readd.bind(game.root)
-	const destroyAll: KaboomCtx["destroyAll"] = game.root.removeAll.bind(game.root)
-	const get: KaboomCtx["get"] = game.root.get.bind(game.root)
+	const add = game.root.add.bind(game.root)
+	const readd = game.root.readd.bind(game.root)
+	const destroyAll = game.root.removeAll.bind(game.root)
+	const get = game.root.get.bind(game.root)
+	const wait = game.root.wait.bind(game.root)
+	const loop = game.root.loop.bind(game.root)
+	const tween = game.root.tween.bind(game.root)
 
 	function boom(speed: number = 2, size: number = 1): Comp {
 		let time = 0
 		return {
-			id: "boom",
 			require: [ "scale" ],
 			update(this: GameObj<ScaleComp>) {
 				const s = Math.sin(time * speed) * size
@@ -6490,14 +5946,6 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 
 	}
 
-	if (gopt.debug !== false) {
-		enterDebugMode()
-	}
-
-	if (gopt.burp) {
-		enterBurpMode()
-	}
-
 	function onLoading(action: (progress: number) => void) {
 		game.events.on("loading", action)
 	}
@@ -6576,10 +6024,6 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 
 			app.quit()
 
-			for (const name in winEvents) {
-				window.removeEventListener(name, winEvents[name])
-			}
-
 			// clear canvas
 			gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT | gl.STENCIL_BUFFER_BIT)
 
@@ -6598,58 +6042,11 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 			gl.bindFramebuffer(gl.FRAMEBUFFER, null)
 
 			// run all scattered gc events
+			ggl.destroy()
 			gc.forEach((f) => f())
 
-			// delete webgl buffers
-			gl.deleteBuffer(gfx.vbuf)
-			gl.deleteBuffer(gfx.ibuf)
-
 		})
 
-	}
-
-	function tween<V extends LerpValue>(
-		from: V,
-		to: V,
-		duration: number,
-		setValue: (value: V) => void,
-		easeFunc = easings.linear,
-	): TweenController {
-		let curTime = 0
-		const onEndEvents: Array<() => void> = []
-		const ev = onUpdate(() => {
-			curTime += dt()
-			const t = Math.min(curTime / duration, 1)
-			setValue(lerp(from, to, easeFunc(t)))
-			if (t === 1) {
-				ev.cancel()
-				setValue(to)
-				onEndEvents.forEach((action) => action())
-			}
-		})
-		return {
-			get paused() {
-				return ev.paused
-			},
-			set paused(p) {
-				ev.paused = p
-			},
-			onEnd(action: () => void) {
-				onEndEvents.push(action)
-			},
-			then(action: () => void) {
-				this.onEnd(action)
-				return this
-			},
-			cancel() {
-				ev.cancel()
-			},
-			finish() {
-				ev.cancel()
-				setValue(to)
-				onEndEvents.forEach((action) => action())
-			},
-		}
 	}
 
 	let isFirstFrame = true
@@ -6657,32 +6054,38 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 	// main game loop
 	app.run(() => {
 
-		if (!assets.loaded) {
-			if (loadProgress() === 1 && !isFirstFrame) {
-				assets.loaded = true
-				game.events.trigger("load")
+		try {
+
+			if (!assets.loaded) {
+				if (loadProgress() === 1 && !isFirstFrame) {
+					assets.loaded = true
+					game.events.trigger("load")
+				}
 			}
-		}
 
-		if (!assets.loaded && gopt.loadingScreen !== false || isFirstFrame) {
-			frameStart()
-			// TODO: Currently if assets are not initially loaded no updates or timers will be run, however they will run if loadingScreen is set to false. What's the desired behavior or should we make them consistent?
-			drawLoadScreen()
-			frameEnd()
-		} else {
-			if (!debug.paused) updateFrame()
-			checkFrame()
-			frameStart()
-			drawFrame()
-			if (gopt.debug !== false) drawDebug()
-			frameEnd()
-		}
+			if (!assets.loaded && gopt.loadingScreen !== false || isFirstFrame) {
+				frameStart()
+				// TODO: Currently if assets are not initially loaded no updates or timers will be run, however they will run if loadingScreen is set to false. What's the desired behavior or should we make them consistent?
+				drawLoadScreen()
+				frameEnd()
+			} else {
+				if (!debug.paused) updateFrame()
+				checkFrame()
+				frameStart()
+				drawFrame()
+				if (gopt.debug !== false) drawDebug()
+				frameEnd()
+			}
 
-		if (isFirstFrame) {
-			isFirstFrame = false
-		}
+			if (isFirstFrame) {
+				isFirstFrame = false
+			}
 
-		game.events.trigger("frameEnd")
+			game.events.trigger("frameEnd")
+
+		} catch (e) {
+			handleErr(e)
+		}
 
 	})
 
@@ -6698,35 +6101,10 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 		const cw = gl.drawingBufferWidth / pd
 		const ch = gl.drawingBufferHeight / pd
 
-		if (app.isFullscreen()) {
-			const ww = window.innerWidth
-			const wh = window.innerHeight
-			const rw = ww / wh
-			const rc = cw / ch
-			if (rw > rc) {
-				const sw = window.innerHeight * rc
-				gfx.viewport = {
-					x: (ww - sw) / 2,
-					y: 0,
-					width: sw,
-					height: wh,
-				}
-			} else {
-				const sh = window.innerWidth / rc
-				gfx.viewport = {
-					x: 0,
-					y: (wh - sh) / 2,
-					width: ww,
-					height: sh,
-				}
-			}
-			return
-		}
-
 		if (gopt.letterbox) {
 
 			if (!gopt.width || !gopt.height) {
-				throw new KaboomError("Letterboxing requires width and height defined.")
+				throw new Error("Letterboxing requires width and height defined.")
 			}
 
 			const rc = cw / ch
@@ -6758,7 +6136,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 
 		if (gopt.stretch) {
 			if (!gopt.width || !gopt.height) {
-				throw new KaboomError("Stretching requires width and height defined.")
+				throw new Error("Stretching requires width and height defined.")
 			}
 		}
 
@@ -6771,37 +6149,56 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 
 	}
 
-	app.onHide(() => {
-		if (!gopt.backgroundAudio) {
-			audio.ctx.suspend()
-		}
-	})
+	function initEvents() {
 
-	app.onShow(() => {
-		if (!gopt.backgroundAudio) {
-			audio.ctx.resume()
-		}
-	})
+		app.onHide(() => {
+			if (!gopt.backgroundAudio) {
+				audio.ctx.suspend()
+			}
+		})
 
-	// TODO: white artifact when scrolling, but disappears when done
-	// TODO: if you resize to larger than the initial size it'll leave white space
-	// TODO: this clears on scene change
-	app.onResize(() => {
-		if (app.isFullscreen()) return
-		const fixedSize = gopt.width && gopt.height
-		if (fixedSize && !gopt.stretch && !gopt.letterbox) return
-		canvas.width = canvas.offsetWidth * pixelDensity
-		canvas.height = canvas.offsetHeight * pixelDensity
-		updateViewport()
-		if (!fixedSize) {
-			gfx.frameBuffer.free()
-			gfx.frameBuffer = new FrameBuffer(gl.drawingBufferWidth, gl.drawingBufferHeight)
-			gfx.width = gl.drawingBufferWidth / pixelDensity
-			gfx.height = gl.drawingBufferHeight / pixelDensity
+		app.onShow(() => {
+			if (!gopt.backgroundAudio) {
+				audio.ctx.resume()
+			}
+		})
+
+		app.onResize(() => {
+			if (app.isFullscreen()) return
+			const fixedSize = gopt.width && gopt.height
+			if (fixedSize && !gopt.stretch && !gopt.letterbox) return
+			canvas.width = canvas.offsetWidth * pixelDensity
+			canvas.height = canvas.offsetHeight * pixelDensity
+			updateViewport()
+			if (!fixedSize) {
+				gfx.frameBuffer.free()
+				gfx.frameBuffer = new FrameBuffer(ggl, gl.drawingBufferWidth, gl.drawingBufferHeight)
+				gfx.width = gl.drawingBufferWidth / pixelDensity
+				gfx.height = gl.drawingBufferHeight / pixelDensity
+			}
+		})
+
+		if (gopt.debug !== false) {
+			app.onKeyPress("f1", () => debug.inspect = !debug.inspect)
+			app.onKeyPress("f2", () => debug.clearLog())
+			app.onKeyPress("f8", () => debug.paused = !debug.paused)
+			app.onKeyPress("f7", () => {
+				debug.timeScale = toFixed(clamp(debug.timeScale - 0.2, 0, 2), 1)
+			})
+			app.onKeyPress("f9", () => {
+				debug.timeScale = toFixed(clamp(debug.timeScale + 0.2, 0, 2), 1)
+			})
+			app.onKeyPress("f10", () => debug.stepFrame())
 		}
-	})
+
+		if (gopt.burp) {
+			app.onKeyPress("b", () => burp())
+		}
+
+	}
 
 	updateViewport()
+	initEvents()
 
 	// the exported ctx handle
 	const ctx: KaboomCtx = {
@@ -6901,6 +6298,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 		state,
 		fadeIn,
 		mask,
+		drawon,
 		tile,
 		agent,
 		// group events
@@ -6949,7 +6347,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 		isGamepadButtonPressed: app.isGamepadButtonPressed,
 		isGamepadButtonDown: app.isGamepadButtonDown,
 		isGamepadButtonReleased: app.isGamepadButtonReleased,
-		// getGamepadStick,
+		getGamepadStick: app.getGamepadStick,
 		charInputted: app.charInputted,
 		// timer
 		loop,
@@ -6960,7 +6358,6 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 		burp,
 		audioCtx: audio.ctx,
 		// math
-		Timer,
 		Line,
 		Rect,
 		Circle,
@@ -7017,6 +6414,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 		pushRotate,
 		pushMatrix,
 		usePostEffect,
+		makeCanvas,
 		// debug
 		debug,
 		// scene
@@ -7059,7 +6457,6 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 		Event,
 		EventHandler,
 		EventController,
-		KaboomError,
 	}
 
 	if (gopt.plugins) {
@@ -7073,7 +6470,9 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 		}
 	}
 
-	app.canvas().focus()
+	if (gopt.focus !== false) {
+		app.canvas().focus()
+	}
 
 	return ctx
 
