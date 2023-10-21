@@ -224,6 +224,8 @@ const VERTEX_FORMAT = [
 	{ name: "a_pos", size: 2 },
 	{ name: "a_uv", size: 2 },
 	{ name: "a_color", size: 4 },
+	// Pass in a depth attribute for rendering background, 0 to 1
+	{ name: "a_depth", size: 2 },
 ]
 
 const STRIDE = VERTEX_FORMAT.reduce((sum, f) => sum + f.size, 0)
@@ -237,10 +239,15 @@ const VERT_TEMPLATE = `
 attribute vec2 a_pos;
 attribute vec2 a_uv;
 attribute vec4 a_color;
+// Me
+attribute vec2 a_depth;
 
 varying vec2 v_pos;
 varying vec2 v_uv;
 varying vec4 v_color;
+
+// Probably won't need if frag shader logic can be moved to vertex shader
+varying vec2 v_depth;
 
 vec4 def_vert() {
 	return vec4(a_pos, 0.0, 1.0);
@@ -253,6 +260,7 @@ void main() {
 	v_pos = a_pos;
 	v_uv = a_uv;
 	v_color = a_color;
+	v_depth = a_depth;
 	gl_Position = pos;
 }
 `
@@ -264,6 +272,8 @@ precision mediump float;
 varying vec2 v_pos;
 varying vec2 v_uv;
 varying vec4 v_color;
+// Me again
+varying vec2 v_depth;
 
 uniform sampler2D u_tex;
 
@@ -1407,6 +1417,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 				pt.x, pt.y,
 				v.uv.x, v.uv.y,
 				v.color.r / 255, v.color.g / 255, v.color.b / 255, v.opacity,
+				v.depth?.x ?? 0, v.depth?.y ?? 0,
 			)
 		}
 
@@ -1549,6 +1560,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 		const q = opt.quad || new Quad(0, 0, 1, 1)
 		const color = opt.color || rgb(255, 255, 255)
 		const opacity = opt.opacity ?? 1
+		const depth = opt.depth ?? new Vec2(0, 0)
 
 		// apply uv padding to avoid artifacts
 		const uvPadX = opt.tex ? UV_PAD / opt.tex.width : 0
@@ -1570,24 +1582,28 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 				uv: new Vec2(opt.flipX ? qx + qw : qx, opt.flipY ? qy : qy + qh),
 				color: color,
 				opacity: opacity,
+				depth,
 			},
 			{
 				pos: new Vec2(-w / 2, -h / 2),
 				uv: new Vec2(opt.flipX ? qx + qw : qx, opt.flipY ? qy + qh : qy),
 				color: color,
 				opacity: opacity,
+				depth,
 			},
 			{
 				pos: new Vec2(w / 2, -h / 2),
 				uv: new Vec2(opt.flipX ? qx : qx + qw, opt.flipY ? qy + qh : qy),
 				color: color,
 				opacity: opacity,
+				depth,
 			},
 			{
 				pos: new Vec2(w / 2, h / 2),
 				uv: new Vec2(opt.flipX ? qx : qx + qw, opt.flipY ? qy : qy + qh),
 				color: color,
 				opacity: opacity,
+				depth,
 			},
 		], [0, 1, 3, 1, 2, 3], opt.fixed, opt.tex, opt.shader, opt.uniform)
 
@@ -1977,6 +1993,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 				uv: new Vec2(0, 0),
 				color: opt.colors ? (opt.colors[i] ?? color) : color,
 				opacity: opt.opacity ?? 1,
+				depth: opt.depth ?? new Vec2(0, 0),
 			}))
 
 			// TODO: better triangulation
@@ -3590,6 +3607,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 			outline: obj.outline,
 			shader: obj.shader,
 			uniform: obj.uniform,
+			depth: obj.depth,
 		}
 	}
 

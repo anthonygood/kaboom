@@ -3178,6 +3178,7 @@ export interface Vertex {
 	uv: Vec2,
 	color: Color,
 	opacity: number,
+	depth?: Vec2,
 }
 
 /**
@@ -3272,6 +3273,10 @@ export type DrawUVQuadOpt = RenderProps & {
 	 * The anchor point, or the pivot point. Default to "topleft".
 	 */
 	anchor?: Anchor | Vec2,
+	/**
+	 * My 'depth' attribute
+	 */
+	depth?: Vec2,
 }
 
 /**
@@ -3490,6 +3495,11 @@ export type DrawPolygonOpt = RenderProps & {
 	 * @since v3000.0
 	 */
 	colors?: Color[],
+
+	/**
+	 * Me again again
+	 */
+	depth?: Vec2,
 }
 
 export interface Outline {
@@ -4712,7 +4722,6 @@ export interface Debug {
 }
 
 export type UniformValue =
-	number
 	| Vec2
 	| Color
 	| Mat4
