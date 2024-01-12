@@ -1,6 +1,7 @@
 import type {
 	ImageSource,
 	TextureOpt,
+	TexFilter,
 	Uniform,
 } from "./types"
 
@@ -38,7 +39,7 @@ export class Texture {
 		const filter = {
 			"linear": gl.LINEAR,
 			"nearest": gl.NEAREST,
-		}[opt.filter] ?? gl.NEAREST
+		}[opt.filter ?? ctx.opts.texFilter] ?? gl.NEAREST
 
 		const wrap = {
 			"repeat": gl.REPEAT,
@@ -165,6 +166,11 @@ export class FrameBuffer {
 		return canvas.toDataURL()
 	}
 
+	clear() {
+		const gl = this.ctx.gl
+		gl.clear(gl.COLOR_BUFFER_BIT)
+	}
+
 	draw(action: () => void) {
 		this.bind()
 		action()
@@ -254,7 +260,19 @@ export class Shader {
 				gl.uniform3f(loc, val.r, val.g, val.b)
 			} else if (val instanceof Vec2) {
 				gl.uniform2f(loc, val.x, val.y)
-			}
+			} else if (Array.isArray(val)) {
+				const first = val[0]
+				if (typeof first === "number") {
+					gl.uniform1fv(loc, val)
+				} else if (first instanceof Vec2) {
+					gl.uniform2fv(loc, val.map(v => [v.x, v.y]).flat())
+				} else if (first instanceof Color) {
+					gl.uniform3fv(loc, val.map(v => [v.r, v.g, v.b]).flat())
+				}
+			} else if (typeof val === "object") {
+				throw new Error("Unsupported uniform data type.")
+				// TODO allow for struct like objects to be sent as a uniform
+ 			}
 		}
 	}
 
@@ -434,6 +452,7 @@ export class Mesh {
 
 function genStack<T>(setFunc: (item: T) => void) {
 	const stack: T[] = []
+	// TODO: don't do anything if pushed item is the same as the one on top?
 	const push = (item: T) => {
 		stack.push(item)
 		setFunc(item)
@@ -446,7 +465,9 @@ function genStack<T>(setFunc: (item: T) => void) {
 	return [push, pop, cur] as const
 }
 
-export default function initGfx(gl: WebGLRenderingContext) {
+export default function initGfx(gl: WebGLRenderingContext, opts: {
+	texFilter?: TexFilter,
+} = {}) {
 
 	const gc: Array<() => void> = []
 
@@ -498,6 +519,7 @@ export default function initGfx(gl: WebGLRenderingContext) {
 
 	return {
 		gl,
+		opts,
 		onDestroy,
 		destroy,
 		pushTexture2D,

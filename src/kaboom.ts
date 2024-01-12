@@ -1,4 +1,4 @@
-const VERSION = "3000.1.13"
+const VERSION = "3000.1.17"
 
 import initApp from "./app"
 import initGfx, {
@@ -8,9 +8,13 @@ import initGfx, {
 	BatchRenderer,
 } from "./gfx"
 
-import initAssets, {
+import {
 	Asset,
 	AssetBucket,
+	fetchArrayBuffer,
+	fetchJSON,
+	fetchText,
+	loadImg,
 } from "./assets"
 
 import {
@@ -48,6 +52,7 @@ import {
 	testCirclePolygon,
 	deg2rad,
 	rad2deg,
+	evaluateBezier,
 } from "./math"
 
 import easings from "./easings"
@@ -63,7 +68,7 @@ import {
 	downloadBlob,
 	uid,
 	isDataURL,
-	getExt,
+	getFileName,
 	overload2,
 	dataURLToArrayBuffer,
 	EventController,
@@ -88,6 +93,8 @@ import type {
 	DrawRectOpt,
 	DrawLineOpt,
 	DrawLinesOpt,
+	DrawCurveOpt,
+	DrawBezierOpt,
 	DrawTriangleOpt,
 	DrawPolygonOpt,
 	DrawCircleOpt,
@@ -96,6 +103,7 @@ import type {
 	Vertex,
 	BitmapFontData,
 	ShaderData,
+	AsepriteData,
 	LoadSpriteSrc,
 	LoadSpriteOpt,
 	SpriteAtlasData,
@@ -177,16 +185,15 @@ import type {
 	MaskComp,
 	Mask,
 	Outline,
+	PolygonComp,
+	PolygonCompOpt,
+	MusicData,
 } from "./types"
 
 import beanSpriteSrc from "./assets/bean.png"
 import burpSoundSrc from "./assets/burp.mp3"
 import kaSpriteSrc from "./assets/ka.png"
 import boomSpriteSrc from "./assets/boom.png"
-
-type EventList<M> = {
-	[event in keyof M]?: (event: M[event]) => void
-}
 
 interface SpriteCurAnim {
 	name: string,
@@ -215,7 +222,7 @@ const SPRITE_ATLAS_HEIGHT = 2048
 // 0.1 pixel padding to texture coordinates to prevent artifact
 const UV_PAD = 0.1
 const DEF_HASH_GRID_SIZE = 64
-const DEF_FONT_FILTER = "nearest"
+const DEF_FONT_FILTER = "linear"
 
 const LOG_MAX = 8
 const LOG_TIME = 4
@@ -430,7 +437,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 
 	const gc: Array<() => void> = []
 
-	const gl = app.canvas()
+	const gl = app.canvas
 		.getContext("webgl", {
 			antialias: true,
 			depth: true,
@@ -439,8 +446,9 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 			preserveDrawingBuffer: true,
 		})
 
-	const ggl = initGfx(gl)
-	const ass = initAssets()
+	const ggl = initGfx(gl, {
+		texFilter: gopt.texFilter,
+	})
 
 	const gfx = (() => {
 
@@ -461,13 +469,13 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 		let bgAlpha = 1
 
 		if (gopt.background) {
-			bgColor = Color.fromArray(gopt.background)
-			bgAlpha = gopt.background[3] ?? 1
+			bgColor = rgb(gopt.background)
+			bgAlpha = Array.isArray(gopt.background) ? gopt.background[3] : 1
 			gl.clearColor(
 				bgColor.r / 255,
 				bgColor.g / 255,
 				bgColor.b / 255,
-				bgAlpha,
+				bgAlpha ?? 1,
 			)
 		}
 
@@ -576,7 +584,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 		}
 
 		static fromURL(url: string, opt: LoadSpriteOpt = {}): Promise<SpriteData> {
-			return ass.loadImg(url).then((img) => SpriteData.fromImage(img, opt))
+			return loadImg(url).then((img) => SpriteData.fromImage(img, opt))
 		}
 
 	}
@@ -599,7 +607,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 			if (isDataURL(url)) {
 				return SoundData.fromArrayBuffer(dataURLToArrayBuffer(url))
 			} else {
-				return ass.fetchArrayBuffer(url).then((buf) => SoundData.fromArrayBuffer(buf))
+				return fetchArrayBuffer(url).then((buf) => SoundData.fromArrayBuffer(buf))
 			}
 		}
 
@@ -633,6 +641,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 	})()
 
 	const assets = {
+		urlPrefix: "",
 		// asset holders
 		sprites: new AssetBucket<SpriteData>(),
 		fonts: new AssetBucket<FontData>(),
@@ -640,9 +649,15 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 		sounds: new AssetBucket<SoundData>(),
 		shaders: new AssetBucket<ShaderData>(),
 		custom: new AssetBucket<any>(),
+		music: {},
 		packer: new TexPacker(ggl, SPRITE_ATLAS_WIDTH, SPRITE_ATLAS_HEIGHT),
 		// if we finished initially loading all assets
 		loaded: false,
+	}
+
+	function fixURL<D>(url: D): D {
+		if (typeof url !== "string" || isDataURL(url)) return url
+		return assets.urlPrefix + url as D
 	}
 
 	const game = {
@@ -726,22 +741,27 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 	// global load path prefix
 	function loadRoot(path?: string): string {
 		if (path !== undefined) {
-			ass.setURLPrefix(path)
+			assets.urlPrefix = path
 		}
-		return ass.getURLPrefix()
+		return assets.urlPrefix
 	}
 
 	function loadJSON(name, url) {
-		return assets.custom.add(name, ass.fetchJSON(url))
+		return assets.custom.add(name, fetchJSON(url))
 	}
 
 	class FontData {
 		fontface: FontFace
 		filter: TexFilter = DEF_FONT_FILTER
 		outline: Outline | null = null
+		size: number = DEF_TEXT_CACHE_SIZE
 		constructor(face: FontFace, opt: LoadFontOpt = {}) {
 			this.fontface = face
 			this.filter = opt.filter ?? DEF_FONT_FILTER
+			this.size = opt.size ?? DEF_TEXT_CACHE_SIZE
+			if (this.size > MAX_TEXT_CACHE_SIZE) {
+				throw new Error(`Max font size: ${MAX_TEXT_CACHE_SIZE}`)
+			}
 			if (opt.outline) {
 				this.outline = {
 					width: 1,
@@ -779,7 +799,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 		gh: number,
 		opt: LoadBitmapFontOpt = {},
 	): Asset<BitmapFontData> {
-		return assets.bitmapFonts.add(name, ass.loadImg(src)
+		return assets.bitmapFonts.add(name, loadImg(src)
 			.then((img) => {
 				return makeFont(
 					Texture.fromImage(ggl, img, opt),
@@ -814,9 +834,10 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 		src: LoadSpriteSrc,
 		data: SpriteAtlasData | string,
 	): Asset<Record<string, SpriteData>> {
+		src = fixURL(src)
 		if (typeof data === "string") {
 			return load(new Promise((res, rej) => {
-				ass.fetchJSON(data).then((json) => {
+				fetchJSON(data).then((json) => {
 					loadSpriteAtlas(src, json).then(res).catch(rej)
 				})
 			}))
@@ -884,12 +905,13 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 			anims: {},
 		},
 	): Asset<SpriteData> {
+		src = fixURL(src)
 		if (Array.isArray(src)) {
 			if (src.some((s) => typeof s === "string")) {
 				return assets.sprites.add(
 					name,
 					Promise.all(src.map((s) => {
-						return typeof s === "string" ? ass.loadImg(s) : Promise.resolve(s)
+						return typeof s === "string" ? loadImg(s) : Promise.resolve(s)
 					})).then((images) => createSpriteSheet(images, opt)),
 				)
 			} else {
@@ -906,11 +928,13 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 
 	function loadPedit(name: string | null, src: string | PeditFile): Asset<SpriteData> {
 
+		src = fixURL(src)
+
 		// eslint-disable-next-line
 		return assets.sprites.add(name, new Promise(async (resolve) => {
 
-			const data = typeof src === "string" ? await ass.fetchJSON(src) : src
-			const images = await Promise.all(data.frames.map(ass.loadImg))
+			const data = typeof src === "string" ? await fetchJSON(src) : src
+			const images = await Promise.all(data.frames.map(loadImg))
 			const canvas = document.createElement("canvas")
 			canvas.width = data.width
 			canvas.height = data.height * data.frames.length
@@ -935,15 +959,21 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 	function loadAseprite(
 		name: string | null,
 		imgSrc: LoadSpriteSrc,
-		jsonSrc: string,
+		jsonSrc: string | AsepriteData,
 	): Asset<SpriteData> {
+
+		imgSrc = fixURL(imgSrc)
+		jsonSrc = fixURL(jsonSrc)
+
 		if (typeof imgSrc === "string" && !jsonSrc) {
-			jsonSrc = imgSrc.replace(new RegExp(`${getExt(imgSrc)}$`), "json")
+			jsonSrc = getFileName(imgSrc) + ".json"
 		}
+
 		const resolveJSON = typeof jsonSrc === "string"
-			? ass.fetchJSON(jsonSrc)
+			? fetchJSON(jsonSrc)
 			: Promise.resolve(jsonSrc)
-		return assets.sprites.add(name, resolveJSON.then((data) => {
+
+		return assets.sprites.add(name, resolveJSON.then((data: AsepriteData) => {
 			const size = data.meta.size
 			const frames = data.frames.map((f: any) => {
 				return new Quad(
@@ -972,6 +1002,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 				anims: anims,
 			})
 		}))
+
 	}
 
 	function loadShader(
@@ -987,9 +1018,11 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 		vert?: string,
 		frag?: string,
 	): Asset<ShaderData> {
+		vert = fixURL(vert)
+		frag = fixURL(frag)
 		const resolveUrl = (url?: string) =>
 			url
-				? ass.fetchText(url)
+				? fetchText(url)
 				: Promise.resolve(null)
 		const load = Promise.all([resolveUrl(vert), resolveUrl(frag)])
 			.then(([vcode, fcode]: [string | null, string | null]) => {
@@ -998,12 +1031,12 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 		return assets.shaders.add(name, load)
 	}
 
-	// TODO: allow stream big audio
 	// load a sound to asset manager
 	function loadSound(
 		name: string | null,
 		src: string | ArrayBuffer,
 	): Asset<SoundData> {
+		src = fixURL(src)
 		return assets.sounds.add(
 			name,
 			typeof src === "string"
@@ -1012,32 +1045,41 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 		)
 	}
 
+	function loadMusic(
+		name: string | null,
+		url: string,
+	) {
+		const a = new Audio(url)
+		a.preload = "auto"
+		return assets.music[name] = fixURL(url)
+	}
+
 	function loadBean(name: string = "bean"): Asset<SpriteData> {
 		return loadSprite(name, beanSpriteSrc)
 	}
 
-	function getSprite(handle: string): Asset<SpriteData> | void {
-		return assets.sprites.get(handle)
+	function getSprite(name: string): Asset<SpriteData> | void {
+		return assets.sprites.get(name)
 	}
 
-	function getSound(handle: string): Asset<SoundData> | void {
-		return assets.sounds.get(handle)
+	function getSound(name: string): Asset<SoundData> | void {
+		return assets.sounds.get(name)
 	}
 
-	function getFont(handle: string): Asset<FontData> | void {
-		return assets.fonts.get(handle)
+	function getFont(name: string): Asset<FontData> | void {
+		return assets.fonts.get(name)
 	}
 
-	function getBitmapFont(handle: string): Asset<BitmapFontData> | void {
-		return assets.bitmapFonts.get(handle)
+	function getBitmapFont(name: string): Asset<BitmapFontData> | void {
+		return assets.bitmapFonts.get(name)
 	}
 
-	function getShader(handle: string): Asset<ShaderData> | void {
-		return assets.shaders.get(handle)
+	function getShader(name: string): Asset<ShaderData> | void {
+		return assets.shaders.get(name)
 	}
 
-	function getAsset(handle: string): Asset<any> | void {
-		return assets.custom.get(handle)
+	function getAsset(name: string): Asset<any> | void {
+		return assets.custom.get(name)
 	}
 
 	function resolveSprite(
@@ -1065,7 +1107,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 	}
 
 	function resolveSound(
-		src: Parameters<typeof play>[0],
+		src: string | SoundData | Asset<SoundData>,
 	): Asset<SoundData> | null {
 		if (typeof src === "string") {
 			const snd = getSound(src)
@@ -1151,14 +1193,119 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 		return audio.masterNode.gain.value
 	}
 
-	// TODO: method to completely destory audio?
-	// TODO: time() not correct when looped over or ended
-	// TODO: onEnd() not working
-	// plays a sound, returns a control handle
+	function playMusic(url: string, opt: AudioPlayOpt = {}): AudioPlay {
+
+		const onEndEvents = new Event()
+		const el = new Audio(url)
+		const src = audio.ctx.createMediaElementSource(el)
+
+		src.connect(audio.masterNode)
+
+		function resumeAudioCtx() {
+			if (debug.paused) return
+			if (app.isHidden() && !gopt.backgroundAudio) return
+			audio.ctx.resume()
+		}
+
+		function play() {
+			resumeAudioCtx()
+			el.play()
+		}
+
+		if (!opt.paused) {
+			play()
+		}
+
+		el.onended = () => onEndEvents.trigger()
+
+		return {
+
+			play() {
+				play()
+			},
+
+			seek(time: number) {
+				el.currentTime = time
+			},
+
+			stop() {
+				el.pause()
+				this.seek(0)
+			},
+
+			set loop(l: boolean) {
+				el.loop = l
+			},
+
+			get loop() {
+				return el.loop
+			},
+
+			set paused(p: boolean) {
+				if (p) {
+					el.pause()
+				} else {
+					play()
+				}
+			},
+
+			get paused() {
+				return el.paused
+			},
+
+			time() {
+				return el.currentTime
+			},
+
+			duration() {
+				return el.duration
+			},
+
+			set volume(val: number) {
+				el.volume = clamp(val, 0, 1)
+			},
+
+			get volume() {
+				return el.volume
+			},
+
+			set speed(s) {
+				el.playbackRate = Math.max(s, 0)
+			},
+
+			get speed() {
+				return el.playbackRate
+			},
+
+			set detune(d) {
+				// TODO
+			},
+
+			get detune() {
+				// TODO
+				return 0
+			},
+
+			onEnd(action: () => void) {
+				return onEndEvents.add(action)
+			},
+
+			then(action: () => void) {
+				return this.onEnd(action)
+			},
+
+		}
+
+	}
+
 	function play(
-		src: string | SoundData | Asset<SoundData>,
+		src: string | SoundData | Asset<SoundData> | MusicData | Asset<MusicData>,
 		opt: AudioPlayOpt = {},
 	): AudioPlay {
+
+		if (typeof src === "string" && assets.music[src]) {
+			return playMusic(assets.music[src], opt)
+		}
 
 		const ctx = audio.ctx
 		let paused = opt.paused ?? false
@@ -1191,6 +1338,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 			}
 		}
 
+		// @ts-ignore
 		const snd = resolveSound(src)
 
 		if (snd instanceof Asset) {
@@ -1338,7 +1486,22 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 	}
 
 	function makeCanvas(w: number, h: number) {
-		return new FrameBuffer(ggl, w, h)
+		const fb = new FrameBuffer(ggl, w, h)
+		return {
+			clear: () => fb.clear(),
+			free: () => fb.free(),
+			toDataURL: () => fb.toDataURL(),
+			toImageData: () => fb.toImageData(),
+			width: fb.width,
+			height: fb.height,
+			draw: (action) => {
+				flush()
+				fb.bind()
+				action()
+				flush()
+				fb.unbind()
+			},
+		}
 	}
 
 	function makeShader(
@@ -1884,6 +2047,24 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 
 	}
 
+	function drawCurve(curve: (t: number) => Vec2, opt: DrawCurveOpt) {
+		const segments = opt.segments ?? 16
+		const p: Vec2[] = []
+		for (let i = 0; i <= segments; i++) {
+			p.push(curve(i / segments))
+		}
+		drawLines({
+			pts: p,
+			width: opt.width || 1,
+			pos: opt.pos,
+			color: opt.color,
+		})
+	}
+
+	function drawBezier(opt: DrawBezierOpt) {
+		drawCurve(t => evaluateBezier(opt.pt1, opt.pt2, opt.pt3, opt.pt4, t), opt)
+	}
+
 	function drawTriangle(opt: DrawTriangleOpt) {
 		if (!opt.p1 || !opt.p2 || !opt.p3) {
 			throw new Error("drawTriangle() requires properties \"p1\", \"p2\" and \"p3\".")
@@ -1991,7 +2172,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 			const verts = opt.pts.map((pt, i) => ({
 				pos: new Vec2(pt.x, pt.y),
 				uv: new Vec2(0, 0),
-				color: opt.colors ? (opt.colors[i] ?? color) : color,
+				color: opt.colors ? (opt.colors[i] ? opt.colors[i].mult(color) : color) : color,
 				opacity: opt.opacity ?? 1,
 				depth: opt.depth ?? new Vec2(0, 0),
 			}))
@@ -2207,6 +2388,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 					c2d.fillStyle = "#ffffff"
 					const m = c2d.measureText(ch)
 					let w = Math.ceil(m.width)
+					if (!w) continue
 					let h = font.size
 					if (atlas.outline) {
 						c2d.lineJoin = "round"
@@ -2636,7 +2818,10 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 
 			draw(this: GameObj<PosComp | ScaleComp | RotateComp | FixedComp | MaskComp>) {
 				if (this.hidden) return
-				if (this.canvas) this.canvas.bind()
+				if (this.canvas) {
+					flush()
+					this.canvas.bind()
+				}
 				const f = gfx.fixed
 				if (this.fixed) gfx.fixed = true
 				pushTransform()
@@ -2664,7 +2849,10 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 				}
 				popTransform()
 				gfx.fixed = f
-				if (this.canvas) this.canvas.unbind()
+				if (this.canvas) {
+					flush()
+					this.canvas.unbind()
+				}
 			},
 
 			drawInspect(this: GameObj<PosComp | ScaleComp | RotateComp>) {
@@ -3611,6 +3799,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 		}
 	}
 
+	// TODO: accept canvas
 	// TODO: clean
 	function sprite(
 		src: string | SpriteData | Asset<SpriteData>,
@@ -3799,9 +3988,22 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 								this.frame = anim.from
 							}
 						} else {
-							this.frame = anim.to
-							curAnim.onEnd()
-							this.stop()
+							if (curAnim.pingpong) {
+								const isForward = curAnimDir === Math.sign(anim.to - anim.from)
+								if (isForward) {
+									this.frame = anim.to
+									curAnimDir *= -1
+									this.frame += curAnimDir
+								} else {
+									this.frame = anim.from
+									curAnim.onEnd()
+									this.stop()
+								}
+							} else {
+								this.frame = anim.to
+								curAnim.onEnd()
+								this.stop()
+							}
 						}
 					}
 
@@ -3968,6 +4170,30 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 
 		return obj
 
+	}
+
+	function polygon(pts: Vec2[], opt: PolygonCompOpt = {}): PolygonComp {
+		if(pts.length < 3) throw new Error(`Polygon's need more than two points, ${pts.length} points provided`)
+		return {
+			id: "polygon",
+			pts,
+			colors: opt.colors,
+			radius: opt.radius,
+			draw(this: GameObj<PolygonComp>) {
+				drawPolygon(Object.assign(getRenderProps(this), {
+					pts: this.pts,
+					colors: this.colors,
+					radius: this.radius,
+					fill: opt.fill,
+				}))
+			},
+			renderArea(this: GameObj<PolygonComp>) {
+				return new Polygon(this.pts)
+			},
+			inspect() {
+				return this.pts.map(p => `[${p.x},${p.y}]`).join(",")
+			},
+		}
 	}
 
 	function rect(w: number, h: number, opt: RectCompOpt = {}): RectComp {
@@ -4145,19 +4371,20 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 	// TODO: land on wall
 	function body(opt: BodyCompOpt = {}): BodyComp {
 
-		const vel = vec2(0)
 		let curPlatform: GameObj<PosComp | AreaComp | BodyComp> | null = null
 		let lastPlatformPos = null
-		let wantFall = false
+		let willFall = false
 
 		return {
 
 			id: "body",
-			require: [ "pos", "area" ],
+			require: [ "pos" ],
+			vel: new Vec2(0),
+			drag: opt.drag ?? 0,
 			jumpForce: opt.jumpForce ?? DEF_JUMP_FORCE,
 			gravityScale: opt.gravityScale ?? 1,
 			isStatic: opt.isStatic ?? false,
-			// TODO: prefer density * area()
+			// TODO: prefer density * area
 			mass: opt.mass ?? 1,
 
 			add(this: GameObj<PosComp | BodyComp | AreaComp>) {
@@ -4166,113 +4393,119 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 					throw new Error("Can't set body mass to 0")
 				}
 
-				// static vs static: don't resolve
-				// static vs non-static: always resolve non-static
-				// non-static vs non-static: resolve the first one
-				this.onCollideUpdate((other: GameObj<PosComp | BodyComp>, col) => {
+				if (this.is("area")) {
 
-					if (!other.is("body")) {
-						return
-					}
+					// static vs static: don't resolve
+					// static vs non-static: always resolve non-static
+					// non-static vs non-static: resolve the first one
+					this.onCollideUpdate((other: GameObj<PosComp | BodyComp>, col) => {
 
-					if (col.resolved) {
-						return
-					}
-
-					this.trigger("beforePhysicsResolve", col)
-					other.trigger("beforePhysicsResolve", col.reverse())
-
-					// user can mark 'resolved' in beforePhysicsResolve to stop a resolution
-					if (col.resolved) {
-						return
-					}
-
-					if (this.isStatic && other.isStatic) {
-						return
-					} else if (!this.isStatic && !other.isStatic) {
-						// TODO: update all children transform?
-						const tmass = this.mass + other.mass
-						this.pos = this.pos.add(col.displacement.scale(other.mass / tmass))
-						other.pos = other.pos.add(col.displacement.scale(-this.mass / tmass))
-						this.transform = calcTransform(this)
-						other.transform = calcTransform(other)
-					} else {
-						// if one is static and on is not, resolve the non static one
-						const col2 = (!this.isStatic && other.isStatic) ? col : col.reverse()
-						col2.source.pos = col2.source.pos.add(col2.displacement)
-						col2.source.transform = calcTransform(col2.source)
-					}
-
-					col.resolved = true
-					this.trigger("physicsResolve", col)
-					other.trigger("physicsResolve", col.reverse())
-
-				})
-
-				this.onPhysicsResolve((col) => {
-					if (game.gravity) {
-						if (col.isBottom() && this.isFalling()) {
-							vel.y = 0
-							curPlatform = col.target as GameObj<PosComp | BodyComp | AreaComp>
-							lastPlatformPos = col.target.pos
-							if (wantFall) {
-								wantFall = false
-							} else {
-								this.trigger("ground", curPlatform)
-							}
-						} else if (col.isTop() && this.isJumping()) {
-							vel.y = 0
-							this.trigger("headbutt", col.target)
+						if (!other.is("body")) {
+							return
 						}
-					}
-				})
+
+						if (col.resolved) {
+							return
+						}
+
+						this.trigger("beforePhysicsResolve", col)
+						other.trigger("beforePhysicsResolve", col.reverse())
+
+						// user can mark 'resolved' in beforePhysicsResolve to stop a resolution
+						if (col.resolved) {
+							return
+						}
+
+						if (this.isStatic && other.isStatic) {
+							return
+						} else if (!this.isStatic && !other.isStatic) {
+							// TODO: update all children transform?
+							const tmass = this.mass + other.mass
+							this.pos = this.pos.add(col.displacement.scale(other.mass / tmass))
+							other.pos = other.pos.add(col.displacement.scale(-this.mass / tmass))
+							this.transform = calcTransform(this)
+							other.transform = calcTransform(other)
+						} else {
+							// if one is static and on is not, resolve the non static one
+							const col2 = (!this.isStatic && other.isStatic) ? col : col.reverse()
+							col2.source.pos = col2.source.pos.add(col2.displacement)
+							col2.source.transform = calcTransform(col2.source)
+						}
+
+						col.resolved = true
+						this.trigger("physicsResolve", col)
+						other.trigger("physicsResolve", col.reverse())
+
+					})
+
+					this.onPhysicsResolve((col) => {
+						if (game.gravity) {
+							if (col.isBottom() && this.isFalling()) {
+								this.vel.y = 0
+								curPlatform = col.target as GameObj<PosComp | BodyComp | AreaComp>
+								lastPlatformPos = col.target.pos
+								if (willFall) {
+									willFall = false
+								} else {
+									this.trigger("ground", curPlatform)
+								}
+							} else if (col.isTop() && this.isJumping()) {
+								this.vel.y = 0
+								this.trigger("headbutt", col.target)
+							}
+						}
+					})
+
+				}
 
 			},
 
-			update(this: GameObj<PosComp | BodyComp | AreaComp>) {
+			update(this: GameObj<PosComp | BodyComp | AreaComp >) {
 
-				if (!game.gravity) {
-					return
-				}
+				if (game.gravity && !this.isStatic) {
 
-				if (this.isStatic) {
-					return
-				}
-
-				if (wantFall) {
-					curPlatform = null
-					lastPlatformPos = null
-					this.trigger("fallOff")
-					wantFall = false
-				}
-
-				if (curPlatform) {
-					if (
-						// TODO: this prevents from falling when on edge
-						!this.isColliding(curPlatform)
-						|| !curPlatform.exists()
-						|| !curPlatform.is("body")
-					) {
-						wantFall = true
-					} else {
-						if (
-							!curPlatform.pos.eq(lastPlatformPos)
-							&& opt.stickToPlatform !== false
-						) {
-							this.moveBy(curPlatform.pos.sub(lastPlatformPos))
-						}
-						lastPlatformPos = curPlatform.pos
-						return
+					if (willFall) {
+						curPlatform = null
+						lastPlatformPos = null
+						this.trigger("fallOff")
+						willFall = false
 					}
+
+					if (curPlatform) {
+						if (
+							// TODO: this prevents from falling when on edge
+							!this.isColliding(curPlatform)
+							|| !curPlatform.exists()
+							|| !curPlatform.is("body")
+						) {
+							willFall = true
+						} else {
+							if (
+								!curPlatform.pos.eq(lastPlatformPos)
+								&& opt.stickToPlatform !== false
+							) {
+								this.moveBy(curPlatform.pos.sub(lastPlatformPos))
+							}
+							lastPlatformPos = curPlatform.pos
+							return
+						}
+					}
+
+					const prevVelY = this.vel.y
+
+					this.vel.y += game.gravity * this.gravityScale * dt()
+					this.vel.y = Math.min(this.vel.y, opt.maxVelocity ?? MAX_VEL)
+
+					if (prevVelY < 0 && this.vel.y >= 0) {
+						this.trigger("fall")
+					}
+
 				}
 
-				const prevVelY = vel.y
-				vel.y += game.gravity * this.gravityScale * dt()
-				vel.y = Math.min(vel.y, opt.maxVelocity ?? MAX_VEL)
-				if (prevVelY < 0 && vel.y >= 0) {
-					this.trigger("fall")
-				}
-				this.move(vel)
+				this.vel.x *= (1 - this.drag)
+				this.vel.y *= (1 - this.drag)
+
+				this.move(this.vel)
 
 			},
 
@@ -4293,17 +4526,17 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 			},
 
 			isFalling(): boolean {
-				return vel.y > 0
+				return this.vel.y > 0
 			},
 
 			isJumping(): boolean {
-				return vel.y < 0
+				return this.vel.y < 0
 			},
 
 			jump(force: number) {
 				curPlatform = null
 				lastPlatformPos = null
-				vel.y = -force || -this.jumpForce
+				this.vel.y = -force || -this.jumpForce
 			},
 
 			onGround(this: GameObj, action: () => void): EventController {
@@ -5391,7 +5624,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 
 	function record(frameRate?): Recording {
 
-		const stream = app.canvas().captureStream(frameRate)
+		const stream = app.canvas.captureStream(frameRate)
 		const audioDest = audio.ctx.createMediaStreamDestination()
 
 		audio.masterNode.connect(audioDest)
@@ -5451,7 +5684,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 	}
 
 	function isFocused(): boolean {
-		return document.activeElement === app.canvas()
+		return document.activeElement === app.canvas
 	}
 
 	function destroy(obj: GameObj) {
@@ -5978,10 +6211,13 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 
 	function handleErr(err: Error) {
 
+		console.error(err)
 		audio.ctx.suspend()
 
 		// TODO: this should only run once
 		app.run(() => {
+
+			frameStart()
 
 			drawUnscaled(() => {
 
@@ -6027,6 +6263,8 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 				game.events.trigger("error", err)
 
 			})
+
+			frameEnd()
 
 		})
 
@@ -6176,7 +6414,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 		})
 
 		app.onShow(() => {
-			if (!gopt.backgroundAudio) {
+			if (!gopt.backgroundAudio && !debug.paused) {
 				audio.ctx.resume()
 			}
 		})
@@ -6191,8 +6429,8 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 			if (!fixedSize) {
 				gfx.frameBuffer.free()
 				gfx.frameBuffer = new FrameBuffer(ggl, gl.drawingBufferWidth, gl.drawingBufferHeight)
-				gfx.width = gl.drawingBufferWidth / pixelDensity
-				gfx.height = gl.drawingBufferHeight / pixelDensity
+				gfx.width = gl.drawingBufferWidth / pixelDensity / gscale
+				gfx.height = gl.drawingBufferHeight / pixelDensity / gscale
 			}
 		})
 
@@ -6227,6 +6465,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 		loadSprite,
 		loadSpriteAtlas,
 		loadSound,
+		loadMusic,
 		loadBitmapFont,
 		loadFont,
 		loadShader,
@@ -6297,6 +6536,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 		area,
 		sprite,
 		text,
+		polygon,
 		rect,
 		circle,
 		uvquad,
@@ -6403,6 +6643,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 		deg2rad,
 		rad2deg,
 		clamp,
+		evaluateBezier,
 		testLineLine,
 		testRectRect,
 		testRectLine,
@@ -6422,6 +6663,8 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 		drawEllipse,
 		drawUVQuad,
 		drawPolygon,
+		drawCurve,
+		drawBezier,
 		drawFormattedText,
 		drawMasked,
 		drawSubtracted,
@@ -6453,7 +6696,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 		// char sets
 		ASCII_CHARS,
 		// dom
-		canvas: app.canvas(),
+		canvas: app.canvas,
 		// misc
 		addKaboom,
 		// dirs
@@ -6489,7 +6732,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 	}
 
 	if (gopt.focus !== false) {
-		app.canvas().focus()
+		app.canvas.focus()
 	}
 
 	return ctx

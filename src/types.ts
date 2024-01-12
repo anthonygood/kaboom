@@ -189,6 +189,7 @@ export interface KaboomCtx {
 	color(r: number, g: number, b: number): ColorComp,
 	color(c: Color): ColorComp,
 	color(rgb: [number, number, number]): ColorComp,
+	color(c: string): ColorComp,
 	color(): ColorComp,
 	/**
 	 * Sets opacity (0.0 - 1.0).
@@ -250,6 +251,23 @@ export interface KaboomCtx {
 	 * ```
 	 */
 	text(txt: string, options?: TextCompOpt): TextComp,
+	/**
+	 * Render as a polygon.
+	 *
+	 * @since v3000.2
+	 *
+	 * @example
+	 * ```js
+	 * // Make a square the hard way
+	 * add([
+	 *     pos(80, 120),
+	 *     polygon([vec2(0,0), vec2(50,0), vec2(50,50), vec2(0,50)]),
+	 *     outline(4),
+	 *     area(),
+	 * ])
+	 * ```
+	 */
+	polygon(pts: Vec2[], opt?: PolygonCompOpt): PolygonComp,
 	/**
 	 * Render as a rectangle.
 	 *
@@ -499,7 +517,7 @@ export interface KaboomCtx {
 	 *     player.hurt(1)
 	 *     bad.hurt(1)
 	 * })
-     *
+		 *
 	 * player.onCollide("apple", () => {
 	 *     player.heal(1)
 	 * })
@@ -515,7 +533,7 @@ export interface KaboomCtx {
 	 * })
 	 * ```
 	 */
-	health(hp: number): HealthComp,
+	health(hp: number, maxHP?: number): HealthComp,
 	/**
 	 * Destroy the game obj after certain amount of time
 	 *
@@ -1049,7 +1067,7 @@ export interface KaboomCtx {
 	 * @example
 	 * ```js
 	 * loadRoot("https://myassets.com/")
-	 * loadSprite("bean", "sprites/bean.png") // will resolve to "https://myassets.com/sprites/frogg.png"
+	 * loadSprite("bean", "sprites/bean.png") // will resolve to "https://myassets.com/sprites/bean.png"
 	 * ```
 	 */
 	loadRoot(path?: string): string,
@@ -1146,7 +1164,7 @@ export interface KaboomCtx {
 	loadAseprite(
 		name: string | null,
 		imgSrc: LoadSpriteSrc,
-		jsonSrc: string
+		jsonSrc: string | AsepriteData,
 	): Asset<SpriteData>,
 	loadPedit(name: string | null, src: string): Asset<SpriteData>,
 	/**
@@ -1174,14 +1192,27 @@ export interface KaboomCtx {
 	 *
 	 * @example
 	 * ```js
-	 * loadSound("shoot", "horse.ogg")
-	 * loadSound("shoot", "https://kaboomjs.com/sounds/scream6.mp3")
+	 * loadSound("shoot", "/sounds/horse.ogg")
+	 * loadSound("shoot", "/sounds/squeeze.mp3")
+	 * loadSound("shoot", "/sounds/shoot.wav")
 	 * ```
 	 */
 	loadSound(
 		name: string | null,
 		src: string | ArrayBuffer,
 	): Asset<SoundData>,
+	/**
+	 * Like loadSound(), but the audio is streamed and won't block loading. Use this for big audio files like background music.
+	 *
+	 * @example
+	 * ```js
+	 * loadMusic("shoot", "/music/bossfight.mp3")
+	 * ```
+	 */
+	loadMusic(
+		name: string | null,
+		url: string,
+	): void,
 	/**
 	 * Load a font (any format supported by the browser, e.g. ttf, otf, woff).
 	 *
@@ -1566,7 +1597,7 @@ export interface KaboomCtx {
 	 * ```js
 	 * // toggle fullscreen mode on "f"
 	 * onKeyPress("f", (c) => {
-	 *     fullscreen(!isFullscreen())
+	 *     setFullscreen(!isFullscreen())
 	 * })
 	 * ```
 	 */
@@ -1632,7 +1663,10 @@ export interface KaboomCtx {
 	 * music.speed = 1.2
 	 * ```
 	 */
-	play(src: string | SoundData | Asset<SoundData>, options?: AudioPlayOpt): AudioPlay,
+	play(
+		src: string | SoundData | Asset<SoundData> | MusicData | Asset<MusicData>,
+		options?: AudioPlayOpt,
+	): AudioPlay,
 	/**
 	 * Yep.
 	 */
@@ -1747,7 +1781,7 @@ export interface KaboomCtx {
 	vec2(xy: number): Vec2,
 	vec2(): Vec2,
 	/**
-	 * RGB color (0 - 255).
+	 * Create a color from RGB values (0 - 255).
 	 *
 	 * @example
 	 * ```js
@@ -1756,6 +1790,16 @@ export interface KaboomCtx {
 	 * ```
 	 */
 	rgb(r: number, g: number, b: number): Color,
+	/**
+	 * Create a color from hex string.
+	 *
+	 * @since v3000.2
+	 *
+	 * @example
+	 * ```js
+	 * sky.color = rgb("#ef6360")
+	 */
+	rgb(hex: string): Color,
 	/**
 	 * Same as rgb(255, 255, 255).
 	 */
@@ -1879,6 +1923,10 @@ export interface KaboomCtx {
 	 * Return a value clamped to an inclusive range of min and max.
 	 */
 	clamp(n: number, min: number, max: number): number,
+	/**
+	 * Evaluate the Bezier at the given t
+	 */
+	evaluateBezier(pt1: Vec2, pt2: Vec2, pt3: Vec2, pt4: Vec2, t: number): Vec2,
 	/**
 	 * Check if a line and a point intersect.
 	 */
@@ -2051,6 +2099,35 @@ export interface KaboomCtx {
 	 * ```
 	 */
 	drawLines(options: DrawLinesOpt): void,
+	/**
+	 * Draw a curve.
+	 *
+	 * @example
+	 * ```js
+	 * drawCurve(t => evaluateBezier(a, b, c, d, t)
+         * {
+	 *     width: 2,
+	 *     color: rgb(0, 0, 255),
+	 * })
+	 * ```
+	 */
+	drawCurve(curve: (t: number) => Vec2, opt: DrawCurveOpt): void,
+	/**
+	 * Draw a cubic Bezier curve.
+	 *
+	 * @example
+	 * ```js
+	 * drawBezier({
+         *     pt1: vec2(100, 100),
+         *     pt2: vec2(200, 100),
+         *     pt3: vec2(200, 200),
+         *     pt4: vec2(100, 200),
+         *     width: 2,
+         *     color: GREEN
+	 * })
+	 * ```
+	 */
+	drawBezier(opt: DrawBezierOpt): void,
 	/**
 	 * Draw a triangle.
 	 *
@@ -2249,7 +2326,7 @@ export interface KaboomCtx {
 	 *
 	 * @since v3000.2
 	 */
-	makeCanvas(w: number, h: number): FrameBuffer
+	makeCanvas(w: number, h: number): Canvas
 	/**
 	 * @section Debug
 	 *
@@ -2499,9 +2576,9 @@ export interface KaboomOpt<T extends PluginList<any> = any> {
 	 */
 	root?: HTMLElement,
 	/**
-	 * Background color. E.g. [ 0, 0, 255 ] for solid blue background, or [ 0, 0, 0, 0 ] for transparent background.
+	 * Background color. E.g. [ 0, 0, 255 ] for solid blue background, or [ 0, 0, 0, 0 ] for transparent background. Accepts RGB value array or string hex codes.
 	 */
-	background?: number[],
+	background?: number[] | string,
 	/**
 	 * Default texture filter.
 	 */
@@ -2894,13 +2971,6 @@ export interface LoadSpriteOpt {
 	anims?: SpriteAnims,
 }
 
-export interface LoadSoundOpt {
-	/**
-	 * If stream audio instead of loading the entire audio upfront, use this for large audio files like background music.
-	 */
-	stream?: boolean,
-}
-
 export type NineSlice = {
 	/**
 	 * The width of the 9-slice's left column.
@@ -2961,6 +3031,26 @@ export declare class Asset<D> {
 
 export type LoadSpriteSrc = string | ImageSource
 
+export type AsepriteData = {
+	frames: Array<{
+		frame: {
+			x: number,
+			y: number,
+			w: number,
+			h: number,
+		},
+	}>,
+	meta: {
+		size: { w: number, h: number },
+		frameTags: Array<{
+			name: string,
+			from: number,
+			to: number,
+			direction: "forward" | "reverse" | "pingpong",
+		}>,
+	},
+}
+
 export declare class SpriteData {
 	tex: Texture
 	frames: Quad[]
@@ -2987,9 +3077,17 @@ export declare class SoundData {
 	static fromURL(url: string): Promise<SoundData>
 }
 
+export type MusicData = string
+
 export interface LoadFontOpt {
 	filter?: TexFilter,
 	outline?: number | Outline,
+	/**
+	 * The size to load the font in (default 64).
+	 *
+	 * @since v3000.2
+	 */
+	size?: number,
 }
 
 export interface LoadBitmapFontOpt {
@@ -3161,9 +3259,20 @@ export declare class FrameBuffer {
 	height: number
 	toImageData(): ImageData
 	toDataURL(): string
+	clear(): void
 	draw(action: () => void): void
 	bind(): void
 	unbind(): void
+	free(): void
+}
+
+export type Canvas = {
+	width: number
+	height: number
+	toImageData(): ImageData
+	toDataURL(): string
+	clear(): void
+	draw(action: () => void): void
 	free(): void
 }
 
@@ -3361,6 +3470,36 @@ export type DrawLinesOpt = Omit<RenderProps, "angle" | "scale"> & {
 	 * Line join style (default "none").
 	 */
 	join?: LineJoin,
+}
+
+export type DrawCurveOpt = RenderProps & {
+	/**
+	 * The amount of line segments to draw.
+	 */
+        segments?: number
+	/**
+	 * The width of the line.
+	 */
+        width?: number
+}
+
+export type DrawBezierOpt = DrawCurveOpt & {
+	/**
+	 * The first point.
+	 */
+        pt1: Vec2,
+	/**
+	 * The the first control point.
+	 */
+        pt2: Vec2,
+	/**
+	 * The the second control point.
+	 */
+        pt3: Vec2,
+	/**
+	 * The second point.
+	 */
+        pt4: Vec2,
 }
 
 /**
@@ -4213,7 +4352,17 @@ export interface Collision {
 
 export interface AreaCompOpt {
 	/**
-	 * The shape of the area.
+	 * The shape of the area (currently only Rect and Polygon is supported).
+	 *
+	 * @example
+	 * ```js
+	 * add([
+	 *     sprite("butterfly"),
+	 *     pos(100, 200),
+	 *     // a triangle shape!
+	 *     area({ shape: new Polygon([vec2(0), vec2(100), vec2(-100, 100)]) }),
+	 * ])
+	 * ```
 	 */
 	shape?: Shape,
 	/**
@@ -4613,6 +4762,30 @@ export interface RectComp extends Comp {
 	renderArea(): Rect,
 }
 
+export type PolygonCompOpt = Omit<DrawPolygonOpt, "pts">
+
+/**
+ * Component to draw a polygon.
+ *
+ * @since v3000.2
+ */
+export interface PolygonComp extends Comp {
+	draw: Comp["draw"],
+	/**
+	 * Points in the polygon.
+	 */
+	pts: Vec2[]
+	/**
+	 * The radius of each corner.
+	 */
+	radius?: number,
+	/**
+	 * The color of each vertice.
+	 */
+	colors?: Color[],
+	renderArea(): Polygon,
+}
+
 export interface CircleCompOpt {
 	/**
 	 * If fill the circle (useful if you only want to render outline with outline() component).
@@ -4725,6 +4898,9 @@ export type UniformValue =
 	| Vec2
 	| Color
 	| Mat4
+	| number[]
+	| Vec2[]
+	| Color[]
 
 export type UniformKey = Exclude<string, "u_tex">
 export type Uniform = Record<UniformKey, UniformValue>
@@ -4736,9 +4912,21 @@ export interface ShaderComp extends Comp {
 
 export interface BodyComp extends Comp {
 	/**
+	 * Object current velocity.
+	 *
+	 * @since v3000.2
+	 */
+	vel: Vec2,
+	/**
+	 * How much velocity decays (velocity *= (1 - drag) every frame).
+	 *
+	 * @since v3000.2
+	 */
+	drag: number,
+	/**
 	 * If object is static, won't move, and all non static objects won't move past it.
 	 */
-	isStatic?: boolean,
+	isStatic: boolean,
 	/**
 	 * Initial speed in pixels per second for jump().
 	 */
@@ -4839,6 +5027,12 @@ export interface DoubleJumpComp extends Comp {
 }
 
 export interface BodyCompOpt {
+	/**
+	 * How much velocity decays (velocity *= (1 - drag) every frame).
+	 *
+	 * @since v3000.2
+	 */
+	drag?: number,
 	/**
 	 * Initial speed in pixels per second for jump().
 	 */

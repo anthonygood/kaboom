@@ -90,6 +90,7 @@ export default (opt: {
 		fpsCounter: new FPSCounter(),
 		timeScale: 1,
 		skipTime: false,
+		isHidden: false,
 		numFrames: 0,
 		mousePos: new Vec2(0),
 		mouseDeltaPos: new Vec2(0),
@@ -129,12 +130,12 @@ export default (opt: {
 		}>(),
 	}
 
-	function canvas() {
-		return state.canvas
-	}
-
 	function dt() {
 		return state.dt * state.timeScale
+	}
+
+	function isHidden() {
+		return state.isHidden
 	}
 
 	function time() {
@@ -800,8 +801,10 @@ export default (opt: {
 		if (document.visibilityState === "visible") {
 			// prevent a surge of dt when switch back after the tab being hidden for a while
 			state.skipTime = true
+			state.isHidden = false
 			state.events.trigger("show")
 		} else {
+			state.isHidden = true
 			state.events.trigger("hide")
 		}
 	}
@@ -854,10 +857,11 @@ export default (opt: {
 		dt,
 		time,
 		run,
-		canvas,
+		canvas: state.canvas,
 		fps,
 		numFrames,
 		quit,
+		isHidden,
 		setFullscreen,
 		isFullscreen,
 		setCursor,
