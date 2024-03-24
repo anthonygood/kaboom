@@ -2363,7 +2363,7 @@ export default (gopt: KaboomOpt = {}): KaboomCtx => {
 						filter: opts.filter,
 					}),
 					map: {},
-					size: DEF_TEXT_CACHE_SIZE,
+					size: font instanceof FontData ? font.size : DEF_TEXT_CACHE_SIZE,
 				},
 				cursor: new Vec2(0),
 				outline: opts.outline,
