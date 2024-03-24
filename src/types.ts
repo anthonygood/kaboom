@@ -169,6 +169,26 @@ export interface KaboomCtx {
 	scale(x: number, y: number): ScaleComp,
 	scale(xy: number): ScaleComp,
 	scale(s: Vec2): ScaleComp,
+	/**
+	 * Scale the game obj.
+	 *
+	 * @example
+	 * ```js
+	 * // scale uniformly with one value 
+	 * add([
+	 *     sprite("bean"),
+	 * 	   scale(3),
+	 * ])
+	 * // scale with x & y values. In this case, scales more horizontally.
+	 * add([
+	 *     sprite("bean"),
+	 * 	   scale(3, 1),
+	 * ])
+	 *  // scale with vec2(x,y).
+	 * bean.scale = vec2(2,4)
+	 * 
+	 * ```
+	 */
 	scale(): ScaleComp,
 	/**
 	 * Rotation (in degrees).
@@ -2105,7 +2125,7 @@ export interface KaboomCtx {
 	 * @example
 	 * ```js
 	 * drawCurve(t => evaluateBezier(a, b, c, d, t)
-         * {
+		 * {
 	 *     width: 2,
 	 *     color: rgb(0, 0, 255),
 	 * })
@@ -2118,12 +2138,12 @@ export interface KaboomCtx {
 	 * @example
 	 * ```js
 	 * drawBezier({
-         *     pt1: vec2(100, 100),
-         *     pt2: vec2(200, 100),
-         *     pt3: vec2(200, 200),
-         *     pt4: vec2(100, 200),
-         *     width: 2,
-         *     color: GREEN
+		 *     pt1: vec2(100, 100),
+		 *     pt2: vec2(200, 100),
+		 *     pt3: vec2(200, 200),
+		 *     pt4: vec2(100, 200),
+		 *     width: 2,
+		 *     color: GREEN
 	 * })
 	 * ```
 	 */
@@ -2546,7 +2566,7 @@ export interface KaboomOpt<T extends PluginList<any> = any> {
 	 */
 	stretch?: boolean,
 	/**
-	 * When stretching if keep aspect ratio and leave black bars on remaining spaces. (note: not working properly at the moment.)
+	 * When stretching if keep aspect ratio and leave black bars on remaining spaces.
 	 */
 	letterbox?: boolean,
 	/**
@@ -3476,30 +3496,30 @@ export type DrawCurveOpt = RenderProps & {
 	/**
 	 * The amount of line segments to draw.
 	 */
-        segments?: number
+	segments?: number
 	/**
 	 * The width of the line.
 	 */
-        width?: number
+	width?: number
 }
 
 export type DrawBezierOpt = DrawCurveOpt & {
 	/**
 	 * The first point.
 	 */
-        pt1: Vec2,
+	pt1: Vec2,
 	/**
 	 * The the first control point.
 	 */
-        pt2: Vec2,
+	pt2: Vec2,
 	/**
 	 * The the second control point.
 	 */
-        pt3: Vec2,
+	pt3: Vec2,
 	/**
 	 * The second point.
 	 */
-        pt4: Vec2,
+	pt4: Vec2,
 }
 
 /**
@@ -4052,6 +4072,21 @@ export type RNGValue =
 	| Vec2
 	| Color
 
+export type ShapeType =
+	Vec2
+	| Circle
+	| Line
+	| Rect
+	| Polygon
+
+export type RaycastHit = {
+	fraction: number
+	normal: Vec2
+	point: Vec2
+}
+
+export type RaycastResult = RaycastHit | null
+
 export declare class Rect {
 	pos: Vec2
 	width: number
@@ -4066,6 +4101,9 @@ export declare class Rect {
 	clone(): Rect
 	distToPoint(p: Vec2): number
 	sdistToPoint(p: Vec2): number
+	collides(shape: ShapeType): boolean
+	contains(point: Vec2): boolean
+	raycast(origin: Vec2, direction: Vec2): RaycastResult
 }
 
 export declare class Line {
@@ -4076,6 +4114,9 @@ export declare class Line {
 	bbox(): Rect
 	area(): number
 	clone(): Line
+	collides(shape: ShapeType): boolean
+	contains(point: Vec2): boolean
+	raycast(origin: Vec2, direction: Vec2): RaycastResult
 }
 
 export declare class Circle {
@@ -4086,6 +4127,9 @@ export declare class Circle {
 	bbox(): Rect
 	area(): number
 	clone(): Circle
+	collides(shape: ShapeType): boolean
+	contains(point: Vec2): boolean
+	raycast(origin: Vec2, direction: Vec2): RaycastResult
 }
 
 export declare class Ellipse {
@@ -4106,6 +4150,9 @@ export declare class Polygon {
 	bbox(): Rect
 	area(): number
 	clone(): Polygon
+	collides(shape: ShapeType): boolean
+	contains(point: Vec2): boolean
+	raycast(origin: Vec2, direction: Vec2): RaycastResult
 }
 
 export type Point = Vec2

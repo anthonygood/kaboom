@@ -215,7 +215,7 @@ export class Color {
 	// TODO: use range of [0, 360] [0, 100] [0, 100]?
 	static fromHSL(h: number, s: number, l: number) {
 
-		if (s == 0){
+		if (s == 0) {
 			return new Color(255 * l, 255 * l, 255 * l)
 		}
 
@@ -224,7 +224,7 @@ export class Color {
 			if (t > 1) t -= 1
 			if (t < 1 / 6) return p + (q - p) * 6 * t
 			if (t < 1 / 2) return q
-			if (t < 2 / 3) return p + (q - p) * (2/3 - t) * 6
+			if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6
 			return p
 		}
 
@@ -299,7 +299,7 @@ export class Color {
 			}
 			h /= 6
 		}
-		return [ h, s, l ]
+		return [h, s, l]
 	}
 
 	eq(other: Color): boolean {
@@ -753,14 +753,34 @@ export function testLineLine(l1: Line, l2: Line): Vec2 | null {
 }
 
 export function testRectLine(r: Rect, l: Line): boolean {
-	if (testRectPoint(r, l.p1) || testRectPoint(r, l.p2)) {
+	/*if (testRectPoint(r, l.p1) || testRectPoint(r, l.p2)) {
 		return true
 	}
 	const pts = r.points()
 	return !!testLineLine(l, new Line(pts[0], pts[1]))
 		|| !!testLineLine(l, new Line(pts[1], pts[2]))
 		|| !!testLineLine(l, new Line(pts[2], pts[3]))
-		|| !!testLineLine(l, new Line(pts[3], pts[0]))
+		|| !!testLineLine(l, new Line(pts[3], pts[0]))*/
+	const dir = l.p2.sub(l.p1)
+	let tmin = Number.NEGATIVE_INFINITY, tmax = Number.POSITIVE_INFINITY
+
+	if (dir.x != 0.0) {
+		const tx1 = (r.pos.x - l.p1.x) / dir.x
+		const tx2 = (r.pos.x + r.width - l.p1.x) / dir.x
+
+		tmin = Math.max(tmin, Math.min(tx1, tx2))
+		tmax = Math.min(tmax, Math.max(tx1, tx2))
+	}
+
+	if (dir.y != 0.0) {
+		const ty1 = (r.pos.y - l.p1.y) / dir.y
+		const ty2 = (r.pos.y + r.height - l.p1.y) / dir.y
+
+		tmin = Math.max(tmin, Math.min(ty1, ty2))
+		tmax = Math.min(tmax, Math.max(ty1, ty2))
+	}
+
+	return tmax >= tmin && tmax >= 0 && tmin <= 1
 }
 
 export function testRectPoint2(r: Rect, pt: Point): boolean {
@@ -893,12 +913,15 @@ export function testPolygonPolygon(p1: Polygon, p2: Polygon): boolean {
 			return true
 		}
 	}
+	// Check if any of the points of the polygon lie in the other polygon
+	if (p1.pts.some(p => testPolygonPoint(p2, p)) || p2.pts.some(p => testPolygonPoint(p1, p))) {
+		return true
+	}
 	return false
 }
 
 // https://wrf.ecse.rpi.edu/Research/Short_Notes/pnpoly.html
 export function testPolygonPoint(poly: Polygon, pt: Point): boolean {
-
 	let c = false
 	const p = poly.pts
 
@@ -912,11 +935,288 @@ export function testPolygonPoint(poly: Polygon, pt: Point): boolean {
 	}
 
 	return c
-
 }
 
 export function testPointPoint(p1: Point, p2: Point): boolean {
 	return p1.x === p2.x && p1.y === p2.y
+}
+
+export type ShapeType = Vec2 | Circle | Line | Rect | Polygon
+
+export function testPointShape(point: Point, shape: ShapeType): boolean {
+	if (shape instanceof Vec2) {
+		return testPointPoint(shape as Point, point)
+	}
+	else if (shape instanceof Circle) {
+		return testCirclePoint(shape as Circle, point)
+	}
+	else if (shape instanceof Line) {
+		return testLinePoint(shape as Line, point as Vec2)
+	}
+	else if (shape instanceof Rect) {
+		return testRectPoint(shape as Rect, point)
+	}
+	else if (shape instanceof Polygon) {
+		return testPolygonPoint(shape as Polygon, point)
+	}
+	else {
+		return false
+	}
+}
+
+export function testLineShape(line: Line, shape: ShapeType): boolean {
+	if (shape instanceof Vec2) {
+		return testLinePoint(line, shape as Vec2)
+	}
+	else if (shape instanceof Circle) {
+		return testLineCircle(line, shape as Circle)
+	}
+	else if (shape instanceof Line) {
+		return testLineLine(line, shape as Line) != null
+	}
+	else if (shape instanceof Rect) {
+		return testRectLine(shape as Rect, line)
+	}
+	else if (shape instanceof Polygon) {
+		return testLinePolygon(line, shape as Polygon)
+	}
+	else {
+		return false
+	}
+}
+
+export function testCircleShape(circle: Circle, shape: ShapeType): boolean {
+	if (shape instanceof Vec2) {
+		return testCirclePoint(circle, shape as Point)
+	}
+	else if (shape instanceof Circle) {
+		return testCircleCircle(circle, shape as Circle)
+	}
+	else if (shape instanceof Line) {
+		return testLineCircle(shape as Line, circle)
+	}
+	else if (shape instanceof Rect) {
+		return testRectCircle(shape as Rect, circle)
+	}
+	else if (shape instanceof Polygon) {
+		return testCirclePolygon(circle, shape as Polygon)
+	}
+	else {
+		return false
+	}
+}
+
+export function testRectShape(rect: Rect, shape: ShapeType): boolean {
+	if (shape instanceof Vec2) {
+		return testRectPoint(rect, shape as Point)
+	}
+	else if (shape instanceof Circle) {
+		return testRectCircle(rect, shape as Circle)
+	}
+	else if (shape instanceof Line) {
+		return testRectLine(rect, shape as Line)
+	}
+	else if (shape instanceof Rect) {
+		return testRectRect(rect, shape as Rect)
+	}
+	else if (shape instanceof Polygon) {
+		return testRectPolygon(rect, shape as Polygon)
+	}
+	else {
+		return false
+	}
+}
+
+export function testPolygonShape(polygon: Polygon, shape: ShapeType): boolean {
+	if (shape instanceof Vec2) {
+		return testPolygonPoint(polygon, shape as Point)
+	}
+	else if (shape instanceof Circle) {
+		return testCirclePolygon(shape as Circle, polygon)
+	}
+	else if (shape instanceof Line) {
+		return testLinePolygon(shape as Line, polygon)
+	}
+	else if (shape instanceof Rect) {
+		return testRectPolygon(shape as Rect, polygon)
+	}
+	else if (shape instanceof Polygon) {
+		return testPolygonPolygon(shape as Polygon, polygon)
+	}
+	else {
+		return false
+	}
+}
+
+export function testShapeShape(shape1: ShapeType, shape2: ShapeType): boolean {
+	if (shape1 instanceof Vec2) {
+		return testPointShape(shape1 as Vec2, shape2)
+	}
+	else if (shape1 instanceof Circle) {
+		return testCircleShape(shape1 as Circle, shape2)
+	}
+	else if (shape1 instanceof Line) {
+		return testLineShape(shape1 as Line, shape2)
+	}
+	else if (shape1 instanceof Rect) {
+		return testRectShape(shape1 as Rect, shape2)
+	}
+	else if (shape1 instanceof Polygon) {
+		return testPolygonShape(shape1 as Polygon, shape2)
+	}
+	else {
+		return false
+	}
+}
+
+export type RaycastHit = {
+	fraction: number
+	normal: Vec2
+	point: Vec2
+}
+
+export type RaycastResult = RaycastHit | null
+
+function raycastLine(origin: Vec2, direction: Vec2, line: Line): RaycastResult {
+	const a = origin
+	const c = line.p1
+	const d = line.p2
+	const ab = direction
+	const cd = d.sub(c)
+	const abxcd = ab.cross(cd)
+	// If parallel, no intersection
+	if (Math.abs(abxcd) < Number.EPSILON) {
+		return null
+	}
+	const ac = c.sub(a)
+	const s = ac.cross(cd) / abxcd
+	// Outside the ray
+	if (s <= 0 || s >= 1) {
+		return null
+	}
+	// Outside the line
+	const t = ac.cross(ab) / abxcd
+	if (t <= 0 || t >= 1) {
+		return null
+	}
+
+	const normal = cd.normal().unit()
+	if (direction.dot(normal) > 0) {
+		normal.x *= -1
+		normal.y *= -1
+	}
+
+	return {
+		point: a.add(ab.scale(s)),
+		normal: normal,
+		fraction: s,
+	}
+}
+
+function raycastRect(origin: Vec2, direction: Vec2, rect: Rect) {
+	let tmin = Number.NEGATIVE_INFINITY, tmax = Number.POSITIVE_INFINITY
+	let normal
+
+	if (origin.x != 0.0) {
+		const tx1 = (rect.pos.x - origin.x) / direction.x
+		const tx2 = (rect.pos.x + rect.width - origin.x) / direction.x
+
+		normal = vec2(-Math.sign(direction.x), 0)
+
+		tmin = Math.max(tmin, Math.min(tx1, tx2))
+		tmax = Math.min(tmax, Math.max(tx1, tx2))
+	}
+
+	if (origin.y != 0.0) {
+		const ty1 = (rect.pos.y - origin.y) / direction.y
+		const ty2 = (rect.pos.y + rect.height - origin.y) / direction.y
+
+		if (Math.min(ty1, ty2) > tmin) {
+			normal = vec2(0, -Math.sign(direction.y))
+		}
+
+		tmin = Math.max(tmin, Math.min(ty1, ty2))
+		tmax = Math.min(tmax, Math.max(ty1, ty2))
+	}
+
+	if (tmax >= tmin && tmin >= 0 && tmin <= 1) {
+		const point = origin.add(direction.scale(tmin))
+		return {
+			point: point,
+			normal: normal,
+			fraction: tmin,
+		}
+	}
+	else {
+		return null
+	}
+}
+
+function raycastCircle(origin: Vec2, direction: Vec2, circle: Circle): RaycastResult {
+	const a = origin
+	const c = circle.center
+	const ab = direction
+	const A = ab.dot(ab)
+	const centerToOrigin = a.sub(c)
+	const B = 2 * ab.dot(centerToOrigin)
+	const C = centerToOrigin.dot(centerToOrigin) - circle.radius * circle.radius
+	// Calculate the discriminant of ax^2 + bx + c
+	const disc = B * B - 4 * A * C
+	// No root
+	if ((A <= Number.EPSILON) || (disc < 0)) {
+		return null
+	}
+	// One possible root
+	else if (disc == 0) {
+		const t = -B / (2 * A)
+		if (t >= 0 && t <= 1) {
+			const point = a.add(ab.scale(t))
+			return {
+				point: point,
+				normal: point.sub(c),
+				fraction: t,
+			}
+		}
+	}
+	// Two possible roots
+	else {
+		const t1 = (-B + Math.sqrt(disc)) / (2 * A)
+		const t2 = (-B - Math.sqrt(disc)) / (2 * A)
+		let t = null
+		if (t1 >= 0 && t1 <= 1) {
+			t = t1
+		}
+		if (t2 >= 0 && t2 <= 1) {
+			t = Math.min(t2, t ?? t2)
+		}
+		if (t != null) {
+			const point = a.add(ab.scale(t))
+			return {
+				point: point,
+				normal: point.sub(c).unit(),
+				fraction: t,
+			}
+		}
+	}
+
+	return null
+}
+
+function raycastPolygon(origin: Vec2, direction: Vec2, polygon: Polygon): RaycastResult {
+	const points = polygon.pts
+	let minHit = null
+
+	let prev = points[points.length - 1]
+	for (let i = 0; i < points.length; i++) {
+		const cur = points[i]
+		const hit = raycastLine(origin, direction, new Line(prev, cur))
+		if (hit && (!minHit || minHit.fraction > hit.fraction)) {
+			minHit = hit
+		}
+		prev = cur
+	}
+
+	return minHit
 }
 
 export class Line {
@@ -937,6 +1237,15 @@ export class Line {
 	}
 	clone(): Line {
 		return new Line(this.p1, this.p2)
+	}
+	collides(shape: ShapeType): boolean {
+		return testLineShape(this, shape)
+	}
+	contains(point: Vec2): boolean {
+		return this.collides(point)
+	}
+	raycast(origin: Vec2, direction: Vec2): RaycastResult {
+		return raycastLine(origin, direction, this)
 	}
 }
 
@@ -986,6 +1295,15 @@ export class Rect {
 		const dy = Math.max(min.y - p.y, 0, p.y - max.y)
 		return dx * dx + dy * dy
 	}
+	collides(shape: ShapeType): boolean {
+		return testRectShape(this, shape)
+	}
+	contains(point: Vec2): boolean {
+		return this.collides(point)
+	}
+	raycast(origin: Vec2, direction: Vec2): RaycastResult {
+		return raycastRect(origin, direction, this)
+	}
 }
 
 export class Circle {
@@ -1010,8 +1328,18 @@ export class Circle {
 	clone(): Circle {
 		return new Circle(this.center, this.radius)
 	}
+	collides(shape: ShapeType): boolean {
+		return testCircleShape(this, shape)
+	}
+	contains(point: Vec2): boolean {
+		return this.collides(point)
+	}
+	raycast(origin: Vec2, direction: Vec2): RaycastResult {
+		return raycastCircle(origin, direction, this)
+	}
 }
 
+// TODO: support rotation
 export class Ellipse {
 	center: Vec2
 	radiusX: number
@@ -1078,15 +1406,24 @@ export class Polygon {
 	clone(): Polygon {
 		return new Polygon(this.pts.map((pt) => pt.clone()))
 	}
+	collides(shape: ShapeType): boolean {
+		return testPolygonShape(this, shape)
+	}
+	contains(point: Vec2): boolean {
+		return this.collides(point)
+	}
+	raycast(origin: Vec2, direction: Vec2): RaycastResult {
+		return raycastPolygon(origin, direction, this)
+	}
 }
 
 export function evaluateBezier(pt1: Vec2, pt2: Vec2, pt3: Vec2, pt4: Vec2, t: number) {
-    const t2 = t * t
-    const t3 = t2 * t
-    const mt = 1 - t
-    const mt2 = mt * mt
-    const mt3 = mt2 * mt
-    return pt1.scale(mt3).add(pt2.scale(3 * mt2 * t)).add(pt3.scale(3 * mt * t2)).add(pt4.scale(t3))
+	const t2 = t * t
+	const t3 = t2 * t
+	const mt = 1 - t
+	const mt2 = mt * mt
+	const mt3 = mt2 * mt
+	return pt1.scale(mt3).add(pt2.scale(3 * mt2 * t)).add(pt3.scale(3 * mt * t2)).add(pt4.scale(t3))
 }
 
 export function sat(p1: Polygon, p2: Polygon): Vec2 | null {
